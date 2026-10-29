@@ -48,6 +48,47 @@ Agent 读取卡片说明 → 分析功能 → 核对变量与按钮 → 判断�
 
 ## 安装与配置
 
+### 方式一：通过 DSH 自定义地址从 GitHub 源码安装（无需 npm / Release）
+
+DSH 的「添加插件」输入框支持三种形式：**包名、GitHub 仓库地址、本地目录路径**。从 GitHub 地址安装时，DSH 底层用 pnpm 拉取源码并在本地完成安装，**不要求发布 npm、不要求 GitHub Release**。
+
+1. 打开 DSH → 插件 → **添加插件**
+2. 输入框填写仓库地址（二选一）：
+   - `github:Jydsh/dsh-ding-card`
+   - `https://github.com/Jydsh/dsh-ding-card`
+3. **安装源**保持默认（npm 官方源 / 中国大陆镜像源均可，仅影响依赖下载，不影响 GitHub 安装）
+4. 点「安装」，完成后**重启 DSH**，左侧边栏出现「钉卡片」即成功
+
+命令行方式（安装源固定走 npm 官方源）：
+
+```bash
+dsh plugin --profile desktop add github:Jydsh/dsh-ding-card
+```
+
+指定版本安装（配合 GitHub Release tag）：
+
+```bash
+dsh plugin --profile desktop add github:Jydsh/dsh-ding-card#v2029.10.29
+```
+
+> **关于 pnpm 构建脚本白名单（allowBuilds）**：pnpm 10+ 默认不执行 Git 依赖的 lifecycle 脚本（安全机制）。本插件为**纯 JavaScript、无构建产物**，`prepare` 仅做安装校验，被拦截不影响功能。如安装时提示需要放行构建脚本，请在对应 DSH profile 的 `pnpm-workspace.yaml` 中把本插件加入白名单后重新安装：
+>
+> ```yaml
+> # ~/.dsh/profiles/<profile>/pnpm-workspace.yaml
+> onlyBuiltDependencies:
+>   - dsh-ding-card
+> ```
+>
+> （旧版 pnpm v9 字段名为 `allowBuilds`，写法相同。）
+
+> **前提**：执行安装的 DSH 服务器需能访问 GitHub（源码拉取需要网络）。无法访问时，可将本地 `npm pack` 生成的 `.tgz` 包拷入服务器，改用「本地目录路径 / 本地文件」方式安装。
+
+### 方式二：发布到 npm 后按包名安装（可选）
+
+`dsh plugin add dsh-ding-card`（官方源或中国大陆镜像源均可）。本仓库未自动发布，需要时按需发布。
+
+### 手动安装（本地开发）
+
 1. 安装 [dsh-im](https://github.com/xmanrui/dsh-im) 并配置好钉钉机器人（插件复用其连接，不复制密钥）。
 2. 安装本插件到 DSH 的 `integrations/dsh-ding-card`。
 3. 重启 DSH，左侧边栏出现「钉卡片」入口。

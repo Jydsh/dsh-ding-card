@@ -12,6 +12,9 @@
   "license": "MIT",
   "type": "module",
   "main": "./lib/index.js",
+  "scripts": {
+    "prepare": "node lib/verify-install.mjs"
+  },
   "exports": {
     ".": "./lib/index.js",
     "./client": "./lib/client.js",
