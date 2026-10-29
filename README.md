@@ -59,10 +59,17 @@ DSH 的「添加插件」输入框支持三种形式：**包名、GitHub 仓库�
 3. **安装源**保持默认（npm 官方源 / 中国大陆镜像源均可，仅影响依赖下载，不影响 GitHub 安装）
 4. 点「安装」，完成后**重启 DSH**，左侧边栏出现「钉卡片」即成功
 
-命令行方式（安装源固定走 npm 官方源）：
+命令行方式（`--profile <profile>` 指定 DSH 环境名，不同机器 / 场景可分别安装到对应环境）：
 
 ```bash
+# 桌面端（desktop）环境
 dsh plugin --profile desktop add github:Jydsh/dsh-ding-card
+
+# Web（web）环境
+dsh plugin --profile web add github:Jydsh/dsh-ding-card
+
+# 其他自定义环境：把 <profile> 换成实际环境名即可
+dsh plugin --profile <profile> add github:Jydsh/dsh-ding-card
 ```
 
 指定版本安装（配合 GitHub Release tag）：
@@ -70,6 +77,11 @@ dsh plugin --profile desktop add github:Jydsh/dsh-ding-card
 ```bash
 dsh plugin --profile desktop add github:Jydsh/dsh-ding-card#v2029.10.29
 ```
+
+> **关于 `<profile>` 环境名**：
+> - 用 `dsh plugin --help` 或 DSH 设置页查看当前机器可用的环境名（常见：`desktop` / `web`，也可能是自定义名称）。
+> - 若执行报错 `profile "xxx" is managed exclusively by the Electron application`，说明该环境正被 DSH 应用（Electron）独占：**先退出 DSH 再执行命令行安装**，或直接改用上面的 DSH 界面「添加插件」方式安装。
+> - 安装到哪个 profile，插件就只在该环境的 DSH 实例中生效。
 
 > **关于 pnpm 构建脚本白名单（allowBuilds）**：pnpm 10+ 默认不执行 Git 依赖的 lifecycle 脚本（安全机制）。本插件为**纯 JavaScript、无构建产物**，`prepare` 仅做安装校验，被拦截不影响功能。如安装时提示需要放行构建脚本，请在对应 DSH profile 的 `pnpm-workspace.yaml` 中把本插件加入白名单后重新安装：
 >
