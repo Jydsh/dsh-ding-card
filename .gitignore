@@ -1,0 +1,26 @@
+# 依赖与临时文件
+node_modules/
+.tmp/
+Temp/
+scripts/
+*.log
+
+# 本地调试产物
+.scripts/
+*.card.json
+import_out.txt
+recall2_out.txt
+
+# 环境与密钥
+.env
+.env.local
+*.secret
+config.json
+user_names.json
+debug_recall.json
+callback_tracks.json
+stream_failures.json
+
+# 系统文件
+.DS_Store
+Thumbs.db

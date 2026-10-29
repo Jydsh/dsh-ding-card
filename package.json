@@ -1,0 +1,51 @@
+{
+  "name": "dsh-ding-card",
+  "version": "2029.10.29",
+  "description": "钉钉 AI 卡片交互插件：把 DSH 的提问与审批变成钉钉互动卡片，并复用 dsh-im 的钉钉机器人。",
+  "keywords": [
+    "deepseek-harness",
+    "dsh-plugin",
+    "dsh-im",
+    "dingtalk",
+    "ai-card"
+  ],
+  "license": "MIT",
+  "type": "module",
+  "main": "./lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "assets",
+    "docs",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-connection",
+        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-ui-slots",
+        "@deepseek-ai/dsh-client-locale"
+      ],
+      "platform": "web"
+    },
+    "compatibility": {
+      "dsh": "0.2.1-rc.2",
+      "profiles": [
+        "web"
+      ]
+    }
+  },
+  "engines": {
+    "node": ">=22.19"
+  }
+}
