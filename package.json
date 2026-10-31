@@ -1,6 +1,6 @@
 {
   "name": "dsh-ding-card",
-  "version": "2026.10.31",
+  "version": "2026.10.31-bate1",
   "description": "钉钉 AI 卡片交互插件：把 DSH 的提问与审批变成钉钉互动卡片，并复用 dsh-im 的钉钉机器人。",
   "keywords": [
     "deepseek-harness",
@@ -11,21 +11,26 @@
   ],
   "license": "MIT",
   "type": "module",
-  "main": "./lib/index.js",
+  "main": "./dist/index.js",
   "exports": {
-    ".": "./lib/index.js",
+    ".": "./dist/index.js",
     "./client": "./lib/client.js",
+    "./lib/client.js": "./lib/client.js",
     "./package.json": "./package.json",
-    "./lib/*.js": "./lib/*.js",
-    "./lib/*": "./lib/*.js"
+    "./dist/*.js": "./dist/*.js",
+    "./dist/*": "./dist/*.js"
   },
   "files": [
-    "lib",
+    "dist",
+    "lib/client.js",
     "assets",
     "docs",
     "cordis.patch.yml",
     "README.md"
   ],
+  "scripts": {
+    "build": "tsc"
+  },
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
@@ -49,5 +54,9 @@
   },
   "engines": {
     "node": ">=22.19"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "typescript": "^7.0.2"
   }
 }

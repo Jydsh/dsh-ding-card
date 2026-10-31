@@ -1,21 +1,30 @@
 import { readFile } from 'node:fs/promises';
-import { CARD_TYPE_META, sanitizeCard } from './store.js';
+import { CARD_TYPE_META, sanitizeCard, type CardConfig } from './store.js';
 
 const ASSET_ROOT = new URL('../assets/', import.meta.url);
-const baseCache = new Map();
+const baseCache = new Map<string, Promise<TemplateBase>>();
 
-function clone(value) {
+function clone<T>(value: T): T {
   return structuredClone(value);
 }
 
-async function loadBase(name) {
+async function loadBase(name: string): Promise<TemplateBase> {
   if (!baseCache.has(name)) {
-    baseCache.set(name, readFile(new URL(name, ASSET_ROOT), 'utf8').then((text) => JSON.parse(text)));
+    baseCache.set(name, readFile(new URL(name, ASSET_ROOT), 'utf8').then((text) => JSON.parse(text) as TemplateBase));
   }
-  return baseCache.get(name);
+  return baseCache.get(name)!;
 }
 
-function findNode(nodes, componentName) {
+/** 模板组件树节点（宽松类型：钉钉卡片 JSON）。 */
+export interface TemplateNode {
+  componentName?: string;
+  children?: TemplateNode[];
+  id?: string;
+  props: Record<string, any>;
+  [key: string]: any;
+}
+
+function findNode(nodes: TemplateNode[] | undefined, componentName: string): TemplateNode | null {
   for (const node of nodes ?? []) {
     if (node?.componentName === componentName) return node;
     const hit = findNode(node?.children, componentName);
@@ -24,15 +33,15 @@ function findNode(nodes, componentName) {
   return null;
 }
 
-function dynamicString(text) {
+function dynamicString(text: unknown): { i18n: boolean; type: 'dynamicString'; content: string } {
   return { i18n: false, type: 'dynamicString', content: String(text ?? '') };
 }
 
-function variableDef(name, description, type = 'string') {
+function variableDef(name: string, description: string, type = 'string'): Record<string, any> {
   return { name, private: false, type, id: name, description, editorVarType: 'variables' };
 }
 
-function textVariables(card) {
+function textVariables(card: CardConfig): Record<string, any>[] {
   const names = ['title', 'subtitle', 'content', 'fields', 'image', 'state'];
   const variables = names.map((name) => variableDef(name, `${name} 变量`));
   const count = Math.max(1, Math.min(6, card.design.maxOptions || 4));
@@ -46,7 +55,17 @@ function textVariables(card) {
   return variables;
 }
 
-export function sampleData(card) {
+/** 发送数据的样例值。 */
+export interface SampleCardData {
+  title: string;
+  subtitle: string;
+  content: string;
+  fields: { label: string; value: string }[];
+  state: string;
+  options: { label: string; value: string }[];
+}
+
+export function sampleData(card: CardConfig): SampleCardData {
   const fallback = ['选项 A', '选项 B', '选项 C', '选项 D', '选项 E', '选项 F'];
   const designOptions = Array.isArray(card.design.options) && card.design.options.length
     ? card.design.options
@@ -62,23 +81,23 @@ export function sampleData(card) {
   return data;
 }
 
-export function resolvePlaceholders(template, values) {
+export function resolvePlaceholders(template: unknown, values: Record<string, any>): string {
   return String(template ?? '').replace(/\$\{([A-Za-z0-9_.-]+)\}/g, (_match, key) => (
     values[key] === undefined || values[key] === null ? '' : String(values[key])
   ));
 }
 
-function fieldsText(fields) {
+function fieldsText(fields: unknown): string {
   if (!Array.isArray(fields)) return '';
   return fields
-    .filter((row) => row && (row.label || row.value))
-    .map((row) => `${row.label ?? ''}：${row.value ?? ''}`)
+    .filter((row: Record<string, any>) => row && (row.label || row.value))
+    .map((row: Record<string, any>) => `${row.label ?? ''}：${row.value ?? ''}`)
     .join('\n');
 }
 
 /** Build the cardParamMap and normalized option list for one send. */
 /** 从选项文本提取短按钮标签："A. 选项按钮列表" → "A"、"1、内容" → "1"；无序号前缀则原样返回。 */
-function shortOptionLabel(text) {
+function shortOptionLabel(text: unknown): string {
   const s = String(text ?? '').trim();
   if (!s) return s;
   const m = s.match(/^([A-Za-z0-9一二三四五六七八九十①②③④⑤]{1,2})[.、．:：\s]/);
@@ -86,15 +105,36 @@ function shortOptionLabel(text) {
 }
 
 /** 去掉选项文本的序号前缀，仅保留内容："A. 中国神话中的神" → "中国神话中的神"；无前缀原样返回。 */
-function stripOptionPrefix(text) {
+function stripOptionPrefix(text: unknown): string {
   const s = String(text ?? '').trim();
   return s.replace(/^([A-Za-z0-9一二三四五六七八九十①②③④⑤]{1,2})[.、．:：\s]\s*/, '') || s;
 }
 
-export function buildCardData(cardInput, input = {}) {
+/** 归一化后的按钮选项。 */
+export interface BuiltOption {
+  label: string;
+  value: string;
+  text: string;
+}
+
+/** buildCardData 输入。 */
+export interface CardSendInput {
+  title?: unknown;
+  subtitle?: unknown;
+  content?: unknown;
+  fields?: unknown;
+  image?: unknown;
+  state?: unknown;
+  options?: unknown[];
+  optionIds?: unknown[];
+  variables?: Record<string, any>;
+  optionValueVars?: string[];
+}
+
+export function buildCardData(cardInput: unknown, input: CardSendInput = {}): { params: Record<string, string>; options: BuiltOption[] } {
   const card = sanitizeCard(cardInput);
   const vars = card.variables;
-  const values = {
+  const values: Record<string, any> = {
     title: input.title ?? card.name,
     subtitle: input.subtitle ?? '',
     content: input.content ?? '',
@@ -106,18 +146,23 @@ export function buildCardData(cardInput, input = {}) {
   const sourceOptions = Array.isArray(input.options) && input.options.length > 0
     ? input.options
     : (card.design.options ?? []);
+  // 回传变量列表：发送方（bindVar 用户配置优先）可传入覆盖，否则用导入识别结果。
+  // 提升到函数级：后续模板扩展变量透传（input.variables 循环）也引用它。
+  const optionValueVars = Array.isArray(input.optionValueVars)
+    ? input.optionValueVars
+    : (Array.isArray(vars.optionValueVars) ? vars.optionValueVars : []);
   const showValue = card.design.showOptionValue && !input.optionIds;
-  const options = sourceOptions
+  const options: BuiltOption[] = sourceOptions
     .slice(0, Math.min(6, card.design.maxOptions || 4))
-    .map((entry, index) => {
+    .map((entry: unknown, index) => {
       const isStringEntry = typeof entry === 'string';
-      const rawLabel = isStringEntry ? entry : (entry?.label ?? entry?.text ?? '');
+      const rawLabel = isStringEntry ? entry : ((entry as Record<string, any>)?.label ?? (entry as Record<string, any>)?.text ?? '');
       // 模板设计器导出的默认选项 label 可能是占位符（如 ${btnsA}）：先用 values（含 variables 透传）解析，
       // 让 AI 走 variables 传按钮文案时默认选项也能解析为实际文案。
       const fullLabel = String(resolvePlaceholders(String(rawLabel), values) ?? rawLabel ?? '');
       const rawValue = Array.isArray(input.optionIds) && input.optionIds[index] !== undefined
         ? String(input.optionIds[index])
-        : (isStringEntry ? fullLabel : (entry?.value || fullLabel));
+        : (isStringEntry ? fullLabel : ((entry as Record<string, any>)?.value || fullLabel));
       // 默认选项的 value 若为模板占位符或回传变量名（如 btnsAvalue），它不是真实回传值：
       // 兜底为完整文案（回传值宜全），避免按钮旁文本显示变量名。
       const value = /^\$\{.*\}$/.test(rawValue)
@@ -129,8 +174,8 @@ export function buildCardData(cardInput, input = {}) {
       // 非成组卡片（只有按钮、无旁文本，如 option1..N / 审批的同意/取消）：
       // 按钮是唯一显示区域，按钮文案与回传值保持一致（完整文案），不拆不换。
       const paired = Array.isArray(vars.optionValueVars) && vars.optionValueVars.length > 0;
-      let label;
-      let finalValue;
+      let label: string;
+      let finalValue: string;
       if (!paired) {
         label = fullLabel;
         finalValue = String(value ?? fullLabel);
@@ -156,9 +201,9 @@ export function buildCardData(cardInput, input = {}) {
     })
     // 解析后仍是占位符的默认选项视为无效（AI 应通过 options 数组提供真实选项），过滤掉。
     .filter((option) => option.label.trim() && !/^\$\{.*\}$/.test(option.label));
-  const params = {};
-  const set = (name, value) => {
-    if (name && value !== undefined && value !== null) params[name] = String(value);
+  const params: Record<string, string> = {};
+  const set = (name: unknown, value: unknown) => {
+    if (name && value !== undefined && value !== null) params[String(name)] = String(value);
   };
   set(vars.title, resolvePlaceholders(card.design.title, values) || values.title || '');
   set(vars.subtitle, resolvePlaceholders(card.design.subtitle, values) || values.subtitle || '');
@@ -176,10 +221,6 @@ export function buildCardData(cardInput, input = {}) {
     // templates exported by this plugin use fixed ${optionN} buttons.
     // optionVars/optionParam 可能未被模板声明（缺失时按默认处理，避免空引用）。
     const optionParam = vars.optionParam || 'dsh_option';
-    // 回传变量列表：发送方（bindVar 用户配置优先）可传入覆盖，否则用导入识别结果。
-    const optionValueVars = Array.isArray(input.optionValueVars)
-      ? input.optionValueVars
-      : (Array.isArray(vars.optionValueVars) ? vars.optionValueVars : []);
     // 按钮文案一律写纯文案（label）：成组模板（btnsA ↔ btnsAvalue）的按钮变量写 label，
     // 回传内容写回传变量（由按钮旁文本控件显示，不显示在按钮上）；
     // 普通 optionN 模板同样只写按钮文案，回传值走 actions 的 value。
@@ -226,29 +267,52 @@ export function buildCardData(cardInput, input = {}) {
   return { params, options };
 }
 
-function buildImTemplate(card, base, inputAssets, opts = {}) {
+/** 模板骨架与扩展。 */
+export interface TemplateBase {
+  editorData: string;
+  widgetInfo?: unknown;
+}
+
+/** buildImTemplate 选项。 */
+export interface ImTemplateOpts {
+  type?: string;
+  componentsMap?: TemplateNode[];
+  rootCard?: TemplateNode;
+  extension?: Record<string, any>;
+  widgetInfo?: unknown;
+}
+
+/** 导出的模板。 */
+export interface ExportedTemplate {
+  type: string;
+  mode: 'card';
+  editorData: string;
+  widgetInfo?: unknown;
+}
+
+function buildImTemplate(card: CardConfig, base: TemplateBase, inputAssets: unknown, opts: ImTemplateOpts = {}): ExportedTemplate {
   const editor = clone(JSON.parse(base.editorData));
   // 吊顶卡片：合并后台官方吊顶骨架的组件定义（Card 覆盖为吊顶版），其余组件沿用 im 骨架。
   if (opts.componentsMap) {
-    const merged = new Map((editor.schema.componentsMap || []).map((m) => [m.componentName, m]));
+    const merged = new Map((editor.schema.componentsMap || []).map((m: TemplateNode) => [m.componentName, m]));
     for (const m of opts.componentsMap) merged.set(m.componentName, m);
     editor.schema.componentsMap = [...merged.values()];
   }
   const tree = editor.schema.componentsTree;
-  const cardNode = findNode(tree, 'Card');
-  const textTemplate = findNode(tree, 'BaseText');
+  const cardNode = findNode(tree, 'Card')!;
+  const textTemplate = findNode(tree, 'BaseText')!;
   const buttonListTemplate = findNode(tree, 'ButtonList');
   let sequence = 0;
-  const nextId = (prefix) => `node_${prefix}_${sequence += 1}`;
-  const makeText = (text) => {
+  const nextId = (prefix: string) => `node_${prefix}_${sequence += 1}`;
+  const makeText = (text: unknown) => {
     const node = clone(textTemplate);
     node.id = nextId('text');
     node.props = { ...node.props, text: dynamicString(text) };
     return node;
   };
 
-  const keyed = [];
-  const add = (key, node) => { if (node) keyed.push({ key, node }); };
+  const keyed: { key: string; node: TemplateNode }[] = [];
+  const add = (key: string, node: TemplateNode | null | undefined) => { if (node) keyed.push({ key, node }); };
   add('title', makeText(card.design.title));
   add('subtitle', card.design.subtitle ? makeText(card.design.subtitle) : null);
   add('content', card.design.content ? makeText(card.design.content) : null);
@@ -260,7 +324,7 @@ function buildImTemplate(card, base, inputAssets, opts = {}) {
     list.props.direction = 'vertical';
     const buttonTemplate = list.props.buttons?.list?.[0];
     if (buttonTemplate) {
-      const buttons = [];
+      const buttons: TemplateNode[] = [];
       const count = Math.max(1, Math.min(6, card.design.maxOptions || 4));
       for (let index = 0; index < count; index++) {
         const button = clone(buttonTemplate);
@@ -296,7 +360,7 @@ function buildImTemplate(card, base, inputAssets, opts = {}) {
 
   // 按设计器排定的 order 输出，保证「设计器 ↔ JSON ↔ 钉钉」顺序一致。
   const order = card.design.order ?? ['title', 'subtitle', 'content', 'fields', 'image', 'buttons', 'state'];
-  const children = order.map((key) => keyed.find((item) => item.key === key)?.node).filter(Boolean);
+  const children = order.map((key) => keyed.find((item) => item.key === key)?.node).filter(Boolean) as TemplateNode[];
 
   // 吊顶卡片使用后台官方吊顶骨架的根 Card（吊顶专属 props：hasCardHeader/showCloseButton/closeButtonColor），
   // 并保留其 linkCondition 显隐配置；消息卡片使用 im 骨架根 Card 并补显式 visible。
@@ -347,15 +411,15 @@ function buildImTemplate(card, base, inputAssets, opts = {}) {
   };
 }
 
-function buildStandardTemplate(card, base, inputAssets) {
+function buildStandardTemplate(card: CardConfig, base: TemplateBase, inputAssets: unknown): ExportedTemplate {
   const editor = clone(JSON.parse(base.editorData));
   const tree = editor.schema.componentsTree;
-  const cardNode = findNode(tree, 'StdCard');
-  const markdownTemplate = findNode(tree, 'Markdown');
+  const cardNode = findNode(tree, 'StdCard')!;
+  const markdownTemplate = findNode(tree, 'Markdown')!;
   const buttonBlockTemplate = findNode(tree, 'ButtonBlock');
   let sequence = 0;
-  const nextId = (prefix) => `node_${prefix}_${sequence += 1}`;
-  const makeMarkdown = (variable, fallback = '') => {
+  const nextId = (prefix: string) => `node_${prefix}_${sequence += 1}`;
+  const makeMarkdown = (variable: string, fallback = '') => {
     const node = clone(markdownTemplate);
     node.id = nextId('md');
     node.props = {
@@ -367,8 +431,8 @@ function buildStandardTemplate(card, base, inputAssets) {
     return node;
   };
 
-  const keyed = [];
-  const add = (key, node) => { if (node) keyed.push({ key, node }); };
+  const keyed: { key: string; node: TemplateNode }[] = [];
+  const add = (key: string, node: TemplateNode | null | undefined) => { if (node) keyed.push({ key, node }); };
   add('content', makeMarkdown('content'));
   add('fields', makeMarkdown('fields'));
   // 自由输入同样不在卡片内渲染文本输入框（钉钉本地变量仅支持布尔值+选择框，
@@ -410,7 +474,7 @@ function buildStandardTemplate(card, base, inputAssets) {
 
   // 按设计器排定的 order 输出，保证「设计器 ↔ JSON ↔ 钉钉」顺序一致。
   const order = card.design.order ?? ['title', 'subtitle', 'content', 'fields', 'image', 'buttons', 'state'];
-  const children = order.map((key) => keyed.find((item) => item.key === key)?.node).filter(Boolean);
+  const children = order.map((key) => keyed.find((item) => item.key === key)?.node).filter(Boolean) as TemplateNode[];
 
   const root = clone(cardNode);
   root.id = 'card_root';
@@ -443,13 +507,19 @@ function buildStandardTemplate(card, base, inputAssets) {
   };
 }
 
-function safeFileName(name) {
+function safeFileName(name: unknown): string {
   const cleaned = String(name ?? '').replace(/[\\/:*?"<>|\u0000-\u001f]+/g, '_').trim().slice(0, 60);
   return cleaned || 'dsh-card';
 }
 
+/** 导出结果。 */
+export interface ExportResult {
+  fileName: string;
+  template: ExportedTemplate;
+}
+
 /** One-click export in the DingTalk card-builder import format. */
-export async function exportDingtalkTemplate(cardInput) {
+export async function exportDingtalkTemplate(cardInput: unknown): Promise<ExportResult> {
   const card = sanitizeCard(cardInput);
   if (card.type === 'standard') {
     const [base, inputAssets] = await Promise.all([

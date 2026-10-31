@@ -3,21 +3,211 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 
+/**
+ * 钉钉 AI 卡片插件的核心数据契约（跨模块共享结构）。
+ * 全部类型以 TypeScript 声明，供本项目与编辑器使用。
+ */
+
+/** 卡片类型：消息 / 吊顶 / 通讯录 / 工作台 / 日程 / 标准。 */
+export type CardType = 'message' | 'ceiling' | 'contact' | 'workbench' | 'calendar' | 'standard';
+
+/**
+ * 钉钉卡片变量类型（与钉钉卡片搭建器「变量类型」一一对应）；
+ * 「button」为插件扩展的单个按钮类型（文案 + 回传内容）。
+ * 兼容旧别名 image/text/date/time（历史配置迁移保留）。
+ */
+export type DingVarType =
+  | 'string' | 'stringArray' | 'boolean' | 'booleanArray' | 'number' | 'numberArray'
+  | 'object' | 'objectArray' | 'richText' | 'chart' | 'table' | 'form'
+  | 'dynamicEvent' | 'buttonGroup' | 'button' | 'selectArray' | 'user' | 'userArray'
+  | 'image' | 'text' | 'date' | 'time';
+
+/** 变量定义（模板变量或自定义变量）。 */
+export interface CardVariable {
+  /** 变量名（模板变量名 / 自定义变量名） */
+  name: string;
+  /** 变量类型 */
+  type: DingVarType;
+  /** 说明（Agent 读取后用于分析卡片功能） */
+  desc?: string;
+  /** 补充说明 */
+  note?: string;
+  /** Mock 示例值（任意 JSON） */
+  mock?: unknown;
+  /** 按钮类型变量绑定的回传内容文本变量名 */
+  bindVar?: string;
+  /** Mock 示例值（旧结构，保留兼容） */
+  exampleValue?: string;
+  /** 原始值（旧结构） */
+  value?: unknown;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+/** 卡片按钮定义。 */
+export interface CardButton {
+  /** 显示标签 */
+  label: string;
+  /** 回传值 */
+  value: string;
+}
+
+/** 字段行（标签：值）。 */
+export interface CardField {
+  label: string;
+  value: string;
+}
+
+/** 音频播放器变量绑定（效果预览渲染用）。 */
+export interface AudioPlayerBind {
+  url?: string;
+  coverUrl?: string;
+  title?: string;
+  artist?: string;
+}
+
+/** 卡片设计稿（钉钉卡片搭建器格式的插件内表示）。 */
+export interface CardDesign {
+  /** 标题模板（可含 ${var}） */
+  title: string;
+  /** 副标题模板 */
+  subtitle: string;
+  /** 正文模板 */
+  content: string;
+  /** 结构化字段区 */
+  fields: CardField[];
+  /** 选项按钮 */
+  options: CardButton[];
+  /** 配图 URL 模板 */
+  image: string;
+  /** 状态文本模板 */
+  state: string;
+  /** 是否显示按钮 */
+  showButtons: boolean;
+  /** 是否允许自定义输入 */
+  allowCustom: boolean;
+  /** 按钮是否显示回传值 */
+  showOptionValue: boolean;
+  /** 回传变量中被文本组件绑定的部分 */
+  textValueVars: string[];
+  /** 最多按钮数 */
+  maxOptions: number;
+  /** 主题色 */
+  theme: 'blue' | 'green' | 'orange' | 'red' | 'neutral';
+  /** 按钮样式 */
+  buttonStyle: 'fill' | 'outline';
+  /** 区块顺序 */
+  order: string[];
+  /** 音频播放器变量绑定（仅音乐类卡片配置；其他类型为 null，保证序列化无损） */
+  audioPlayer?: AudioPlayerBind | null;
+}
+
+/** 变量绑定映射（发送时写入卡片模板的变量名映射）。 */
+export interface CardVariables {
+  title?: string;
+  subtitle?: string;
+  content?: string;
+  fields?: string;
+  image?: string;
+  state?: string;
+  actions?: string;
+  /** 选项按钮变量名列表 */
+  optionVars?: string[];
+  /** 成组按钮回传内容变量名列表 */
+  optionValueVars?: string[];
+  /** 按钮排布方式 */
+  actionsMode?: 'actions' | 'fixed';
+  /** 按钮回传参数名 */
+  optionParam?: string;
+  /** 最多按钮数 */
+  maxOptions?: number;
+  /** 发送测试弹窗里的变量/选项按钮顺序（含哨兵 '__option_block__'） */
+  varOrder?: string[];
+  [key: string]: unknown;
+}
+
+/** 卡片配置（卡片库中的一张卡）。 */
+export interface CardConfig {
+  /** 卡片 ID */
+  id: string;
+  /** 卡片名称 */
+  name: string;
+  /** 卡片类型 */
+  type: CardType;
+  /** 卡片说明（Agent 读取后分析功能、判断场景） */
+  description: string;
+  /** 钉钉模板 ID（未绑定则不可投放） */
+  templateId: string;
+  /** 导入时绑定的原始钉钉模板 JSON */
+  sourceJson: string;
+  /** 是否为 AI 卡片（流式填充渲染） */
+  aiCard: boolean;
+  /** 交互完成后是否回收卡片 */
+  recycleOnDone: boolean;
+  /** 变量绑定映射 */
+  variables: CardVariables;
+  /** 设计稿 */
+  design: CardDesign;
+  /** 卡片自定义变量 */
+  customVariables: CardVariable[];
+}
+
+/** 机器人配置。 */
+export interface BotConfig {
+  /** 机器人来源（auto=复用 dsh-im / manual=手动填） */
+  mode: 'auto' | 'manual';
+  /** 钉钉应用 ClientID */
+  clientId: string;
+  /** 密钥引用 */
+  secretRef: string;
+}
+
+/** 交互配置。 */
+export interface InteractionConfig {
+  questions: boolean;
+  approvals: boolean;
+  ceiling: boolean;
+  /** 交互超时（毫秒） */
+  timeoutMs: number;
+  allowGroup: boolean;
+  questionCardId: string;
+  approvalCardId: string;
+  ceilingCardId: string;
+}
+
+/** 侧边栏入口显隐配置。 */
+export interface SidebarConfig {
+  /** auto=未绑定可用卡片时显示，配置后自动隐藏；show=始终显示；hide=始终隐藏 */
+  mode: 'auto' | 'show' | 'hide';
+}
+
+/** 插件全局配置。 */
+export interface PluginConfig {
+  version: number;
+  enabled: boolean;
+  bot: BotConfig;
+  interactions: InteractionConfig;
+  cards: CardConfig[];
+  templateVariables: CardVariable[];
+  customVariables: CardVariable[];
+  sidebar: SidebarConfig;
+}
+
 const MAX_TIMEOUT_MS = 24 * 60 * 60 * 1000;
 const MIN_TIMEOUT_MS = 30 * 1000;
 const MAX_OPTIONS = 6;
 
-export const CARD_TYPES = Object.freeze(['message', 'ceiling', 'contact', 'workbench', 'calendar', 'standard']);
+export const CARD_TYPES: readonly CardType[] = Object.freeze(['message', 'ceiling', 'contact', 'workbench', 'calendar', 'standard']);
 
 // 钉钉卡片变量类型（与钉钉卡片搭建器「变量类型」一一对应）；
 // 「button」为插件扩展的单个按钮类型（文案 + 回传内容），用于成组按钮模板识别与变量集双向绑定。
-export const DING_VAR_TYPES = Object.freeze([
+export const DING_VAR_TYPES: readonly string[] = Object.freeze([
   'string', 'stringArray', 'boolean', 'booleanArray', 'number', 'numberArray',
   'object', 'objectArray', 'richText', 'chart', 'table', 'form',
   'dynamicEvent', 'buttonGroup', 'button', 'selectArray', 'user', 'userArray',
 ]);
 
-export const CARD_TYPE_META = Object.freeze({
+export const CARD_TYPE_META: Readonly<Record<CardType, { label: string; deliverable: boolean; hint: string }>> = Object.freeze({
   message: { label: '消息卡片', deliverable: true, hint: '在钉钉会话中直接投放，支持按钮回调。' },
   ceiling: { label: '吊顶卡片', deliverable: true, hint: '固定在单聊会话顶部，需要会话管理权限。' },
   contact: { label: '通讯录卡片', deliverable: false, hint: '用于通讯录场景，当前仅支持设计与导出模板。' },
@@ -26,7 +216,7 @@ export const CARD_TYPE_META = Object.freeze({
   standard: { label: '标准卡片', deliverable: true, hint: '钉钉标准卡片，适合展示结构化信息。' },
 });
 
-export const DESIGN_ORDER = Object.freeze(['title', 'subtitle', 'content', 'fields', 'image', 'buttons', 'state']);
+export const DESIGN_ORDER: readonly string[] = Object.freeze(['title', 'subtitle', 'content', 'fields', 'image', 'buttons', 'state']);
 
 export const DEFAULT_DESIGN = Object.freeze({
   title: '${title}',
@@ -39,11 +229,12 @@ export const DEFAULT_DESIGN = Object.freeze({
   showButtons: true,
   allowCustom: true,
   showOptionValue: true,
+  textValueVars: Object.freeze([]),
   maxOptions: 4,
   theme: 'blue',
   buttonStyle: 'fill',
   order: DESIGN_ORDER,
-});
+}) as unknown as CardDesign;
 
 export const DEFAULT_VARIABLES = Object.freeze({
   title: 'title',
@@ -57,7 +248,7 @@ export const DEFAULT_VARIABLES = Object.freeze({
   actionsMode: 'fixed',
   optionParam: 'dsh_option',
   maxOptions: 4,
-});
+}) as unknown as CardVariables;
 
 export const DEFAULT_CONFIG = Object.freeze({
   version: 2,
@@ -99,59 +290,59 @@ export const DEFAULT_CONFIG = Object.freeze({
   customVariables: Object.freeze([]),
   // 侧边栏入口显隐：auto=未绑定可用卡片时显示，配置后自动隐藏；show=始终显示；hide=始终隐藏。
   sidebar: Object.freeze({ mode: 'auto' }),
-});
+}) as unknown as PluginConfig;
 
-function cleanString(value, fallback, max = 200) {
+function cleanString(value: unknown, fallback: string, max = 200): string {
   if (typeof value !== 'string') return fallback;
   const text = value.trim();
   return text && text.length <= max ? text : fallback;
 }
 
-function multilineString(value, fallback, max = 4_000) {
+function multilineString(value: unknown, fallback: string, max = 4_000): string {
   if (typeof value !== 'string') return fallback;
   const text = value.replace(/\r\n?/g, '\n').slice(0, max);
   return text.trim() ? text : fallback;
 }
 
-function cleanBool(value, fallback) {
+function cleanBool(value: unknown, fallback: boolean): boolean {
   return typeof value === 'boolean' ? value : fallback;
 }
 
-function cleanTimeout(value, fallback) {
+function cleanTimeout(value: unknown, fallback: number): number {
   const number = Number(value);
   if (!Number.isFinite(number)) return fallback;
   return Math.min(MAX_TIMEOUT_MS, Math.max(MIN_TIMEOUT_MS, Math.round(number)));
 }
 
-function cleanOptionVars(value, fallback) {
+function cleanOptionVars(value: unknown, fallback: string[]): string[] {
   const source = Array.isArray(value) ? value : fallback;
   const output = source
     .slice(0, MAX_OPTIONS)
-    .map((item) => cleanString(item, '', 64))
+    .map((item: unknown) => cleanString(item, '', 64))
     .filter(Boolean);
   return output.length ? output : [...fallback];
 }
 
-function cleanFields(value) {
+function cleanFields(value: unknown): CardField[] {
   if (!Array.isArray(value)) return [];
-  return value.slice(0, 12).map((row) => ({
+  return value.slice(0, 12).map((row: any) => ({
     label: cleanString(row?.label, '', 60),
     value: cleanString(row?.value, '', 300),
   })).filter((row) => row.label || row.value);
 }
 
-function cleanOptions(value) {
+function cleanOptions(value: unknown): CardButton[] {
   if (!Array.isArray(value)) return [];
-  return value.slice(0, MAX_OPTIONS).map((row) => ({
+  return value.slice(0, MAX_OPTIONS).map((row: any) => ({
     label: cleanString(row?.label, '', 60),
     value: cleanString(row?.value, '', 300) || cleanString(row?.label, '', 60),
   })).filter((row) => row.label || row.value);
 }
 
-function cleanDesignOrder(value, fallback = DESIGN_ORDER) {
+function cleanDesignOrder(value: unknown, fallback: readonly string[] = DESIGN_ORDER): string[] {
   if (!Array.isArray(value)) return [...fallback];
-  const seen = new Set();
-  const out = [];
+  const seen = new Set<string>();
+  const out: string[] = [];
   for (const key of value) {
     if (DESIGN_ORDER.includes(key) && !seen.has(key)) {
       seen.add(key);
@@ -164,8 +355,8 @@ function cleanDesignOrder(value, fallback = DESIGN_ORDER) {
   return out;
 }
 
-export function sanitizeDesign(input, base = DEFAULT_DESIGN) {
-  const source = input && typeof input === 'object' ? input : {};
+export function sanitizeDesign(input: unknown, base: Readonly<CardDesign> = DEFAULT_DESIGN): CardDesign {
+  const source = (input && typeof input === 'object' ? input : {}) as Record<string, any>;
   return {
     title: multilineString(source.title, base.title, 200),
     subtitle: multilineString(source.subtitle, base.subtitle, 200),
@@ -179,7 +370,7 @@ export function sanitizeDesign(input, base = DEFAULT_DESIGN) {
     showOptionValue: cleanBool(source.showOptionValue, base.showOptionValue),
     // 回传变量中被文本组件绑定的部分（点击按钮回传的内容会显示在卡片文本控件中）。
     textValueVars: Array.isArray(source.textValueVars)
-      ? source.textValueVars.map((v) => cleanString(v, '', 64)).filter(Boolean).slice(0, 12)
+      ? source.textValueVars.map((v: unknown) => cleanString(v, '', 64)).filter(Boolean).slice(0, 12)
       : [],
     maxOptions: Math.min(MAX_OPTIONS, Math.max(1, Number.isSafeInteger(source.maxOptions)
       ? source.maxOptions : base.maxOptions)),
@@ -194,16 +385,16 @@ export function sanitizeDesign(input, base = DEFAULT_DESIGN) {
         ...(cleanString(source.audioPlayer.title, '', 64) ? { title: cleanString(source.audioPlayer.title, '', 64) } : {}),
         ...(cleanString(source.audioPlayer.artist, '', 64) ? { artist: cleanString(source.audioPlayer.artist, '', 64) } : {}),
       }
-      : undefined,
+      : null,
   };
 }
 
-export function sanitizeVariables(input, base = DEFAULT_VARIABLES) {
-  const source = input && typeof input === 'object' ? input : {};
+export function sanitizeVariables(input: unknown, base: Readonly<CardVariables> = DEFAULT_VARIABLES): CardVariables {
+  const source = (input && typeof input === 'object' ? input : {}) as Record<string, any>;
   // 只清洗输入中实际存在的键；缺失键不再用默认值补全——
   // 这样钉钉模板 JSON 导入的卡片只暴露模板真正声明的变量（模板没有的字段不显示、不发送）。
   // 新建卡片（newCard）与旧配置迁移（cardFromLegacy）会显式带全量变量，不受影响。
-  const result = {};
+  const result: CardVariables = {};
   for (const key of ['title', 'subtitle', 'content', 'fields', 'image', 'state', 'actions']) {
     if (key in source) result[key] = cleanString(source[key], '', 64);
   }
@@ -220,10 +411,10 @@ export function sanitizeVariables(input, base = DEFAULT_VARIABLES) {
 }
 
 /** 变量排序透传：只保留字符串元素、去重、限量，不设默认值（未配置则返回 undefined）。 */
-function cleanVarOrder(input) {
+function cleanVarOrder(input: unknown): string[] | undefined {
   if (!Array.isArray(input)) return undefined;
-  const out = [];
-  const seen = new Set();
+  const out: string[] = [];
+  const seen = new Set<string>();
   for (const item of input) {
     const name = typeof item === 'string' ? item.trim() : '';
     if (!name || seen.has(name)) continue;
@@ -234,34 +425,34 @@ function cleanVarOrder(input) {
 }
 
 /** 模板自定义变量：来自钉钉编辑器 JSON 的 variableList（内置变量名会去重跳过）。 */
-export function sanitizeCustomVariables(input) {
+export function sanitizeCustomVariables(input: unknown): CardVariable[] {
   if (!Array.isArray(input)) return [];
-  const seen = new Set([
+  const seen = new Set<string>([
     'title', 'subtitle', 'content', 'fields', 'image', 'state', 'actions',
     'customText', 'input_status',
-    ...DEFAULT_VARIABLES.optionVars,
+    ...(DEFAULT_VARIABLES.optionVars ?? []),
   ]);
-  const out = [];
+  const out: CardVariable[] = [];
   for (const item of input) {
-    if (!item || typeof item !== 'object' || typeof item.name !== 'string' || !item.name.trim()) continue;
-    const name = item.name.trim().slice(0, 64);
+    if (!item || typeof item !== 'object' || typeof (item as any).name !== 'string' || !(item as any).name.trim()) continue;
+    const name = (item as any).name.trim().slice(0, 64);
     if (seen.has(name)) continue;
     seen.add(name);
     // 类型取钉钉官方变量类型全集（含插件扩展的「button」），并兼容旧别名 image/text/date/time；
     // value 保留原结构（按钮类型的 {text, value} Mock、对象/数组等），仅做基础长度/类型约束。
-    const type = (DING_VAR_TYPES.includes(item.type) || ['image', 'text', 'date', 'time'].includes(item.type))
-      ? item.type : 'string';
-    const value = item.value !== undefined && item.value !== null
-      ? (typeof item.value === 'string' ? cleanString(item.value, '', 2000) : item.value)
+    const type: DingVarType = (DING_VAR_TYPES.includes((item as any).type) || ['image', 'text', 'date', 'time'].includes((item as any).type))
+      ? (item as any).type : 'string';
+    const value = (item as any).value !== undefined && (item as any).value !== null
+      ? (typeof (item as any).value === 'string' ? cleanString((item as any).value, '', 2000) : (item as any).value)
       : '';
     out.push({
       name,
       type,
-      exampleValue: cleanString(item.exampleValue, '', 200),
+      exampleValue: cleanString((item as any).exampleValue, '', 200),
       value,
       // 按钮类型变量（type=button）：绑定的回传内容文本变量名（点击按钮回传的内容写入该变量，
       // 通常由按钮旁文本控件显示）。导入时按模板识别自动配对，用户可在变量集手动改绑。
-      bindVar: cleanString(item.bindVar, '', 64),
+      bindVar: cleanString((item as any).bindVar, '', 64),
     });
     if (out.length >= 50) break;
   }
@@ -269,27 +460,28 @@ export function sanitizeCustomVariables(input) {
 }
 
 /** 全局自定义变量：变量名（不含 ${}）+ 含义 + 一行补充说明（分类 / 来源 / 时间）。 */
-export function sanitizeGlobalVariables(input) {
+export function sanitizeGlobalVariables(input: unknown): CardVariable[] {
   if (!Array.isArray(input)) return [];
-  const seen = new Set();
-  const out = [];
+  const seen = new Set<string>();
+  const out: CardVariable[] = [];
   for (const item of input) {
     if (!item || typeof item !== 'object') continue;
-    const name = String(item.name ?? '').trim();
+    const anyItem = item as Record<string, any>;
+    const name = String(anyItem.name ?? '').trim();
     if (!name || !/^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(name)) continue;
     if (seen.has(name)) continue;
     seen.add(name);
     out.push({
       name,
       // 兼容旧数据：旧版 label 即含义，迁移到 desc；note 作为补充说明保留。
-      type: DING_VAR_TYPES.includes(item.type) ? item.type : 'string',
-      desc: cleanString(item.desc ?? item.label ?? '', 200),
-      note: cleanString(item.note ?? '', 200),
+      type: DING_VAR_TYPES.includes(anyItem.type) ? anyItem.type : 'string',
+      desc: cleanString(anyItem.desc ?? anyItem.label ?? '', '', 200),
+      note: cleanString(anyItem.note ?? '', '', 200),
       // 按钮类型变量绑定的回传内容文本变量名（用户可手动配置）。
-      bindVar: cleanString(item.bindVar, '', 64),
-      mock: sanitizeMock(item.mock),
-      createdAt: cleanString(item.createdAt, '', 40),
-      updatedAt: cleanString(item.updatedAt, '', 40),
+      bindVar: cleanString(anyItem.bindVar, '', 64),
+      mock: sanitizeMock(anyItem.mock),
+      createdAt: cleanString(anyItem.createdAt, '', 40),
+      updatedAt: cleanString(anyItem.updatedAt, '', 40),
     });
     if (out.length >= 200) break;
   }
@@ -297,7 +489,7 @@ export function sanitizeGlobalVariables(input) {
 }
 
 // Mock 数据：保留任意 JSON 值（字符串/数字/布尔/数组/对象），仅限制体积，避免配置膨胀。
-function sanitizeMock(mock) {
+function sanitizeMock(mock: unknown): unknown {
   if (mock === undefined || mock === null) return undefined;
   try {
     const text = JSON.stringify(mock);
@@ -307,35 +499,36 @@ function sanitizeMock(mock) {
 }
 
 // 模板变量（标准集）：与自定义变量同构（name/type/desc/note/mock），可编辑增删。
-export function sanitizeTemplateVariables(input) {
+export function sanitizeTemplateVariables(input: unknown): CardVariable[] {
   if (!Array.isArray(input)) return [];
-  const seen = new Set();
-  const out = [];
+  const seen = new Set<string>();
+  const out: CardVariable[] = [];
   for (const item of input) {
     if (!item || typeof item !== 'object') continue;
-    const name = String(item.name ?? '').trim();
+    const anyItem = item as Record<string, any>;
+    const name = String(anyItem.name ?? '').trim();
     if (!name || !/^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(name)) continue;
     if (seen.has(name)) continue;
     seen.add(name);
     out.push({
       name,
-      type: DING_VAR_TYPES.includes(item.type) ? item.type : 'string',
-      desc: cleanString(item.desc ?? item.label ?? '', 200),
-      note: cleanString(item.note ?? '', '', 200),
+      type: DING_VAR_TYPES.includes(anyItem.type) ? anyItem.type : 'string',
+      desc: cleanString(anyItem.desc ?? anyItem.label ?? '', '', 200),
+      note: cleanString(anyItem.note ?? '', '', 200),
       // 按钮类型变量绑定的回传内容文本变量名（用户可手动配置）。
-      bindVar: cleanString(item.bindVar, '', 64),
-      mock: sanitizeMock(item.mock),
-      createdAt: cleanString(item.createdAt, '', 40),
-      updatedAt: cleanString(item.updatedAt, '', 40),
+      bindVar: cleanString(anyItem.bindVar, '', 64),
+      mock: sanitizeMock(anyItem.mock),
+      createdAt: cleanString(anyItem.createdAt, '', 40),
+      updatedAt: cleanString(anyItem.updatedAt, '', 40),
     });
     if (out.length >= 200) break;
   }
   return out;
 }
 
-export function sanitizeCard(input) {
-  const source = input && typeof input === 'object' ? input : {};
-  const type = CARD_TYPES.includes(source.type) ? source.type : 'message';
+export function sanitizeCard(input: unknown): CardConfig {
+  const source = (input && typeof input === 'object' ? input : {}) as Record<string, any>;
+  const type: CardType = CARD_TYPES.includes(source.type) ? source.type : 'message';
   return {
     id: /^card_[A-Za-z0-9_-]{1,40}$/.test(source.id ?? '') ? source.id : `card_${randomUUID().slice(0, 8)}`,
     name: cleanString(source.name, '未命名卡片', 60),
@@ -354,8 +547,8 @@ export function sanitizeCard(input) {
   };
 }
 
-function cardFromLegacy(id, name, legacy, defaults = {}) {
-  const source = legacy && typeof legacy === 'object' ? legacy : {};
+function cardFromLegacy(id: string, name: string, legacy: unknown, defaults: Record<string, any> = {}): CardConfig {
+  const source = (legacy && typeof legacy === 'object' ? legacy : {}) as Record<string, any>;
   const maxOptions = Number.isSafeInteger(source.maxOptions) ? source.maxOptions : 4;
   return sanitizeCard({
     id,
@@ -384,7 +577,7 @@ function cardFromLegacy(id, name, legacy, defaults = {}) {
   });
 }
 
-function migrateV1(source) {
+function migrateV1(source: Record<string, any>): PluginConfig {
   const legacyCards = source.cards && typeof source.cards === 'object' ? source.cards : {};
   const cards = [
     cardFromLegacy('card_question', '提问卡片', legacyCards.question, { title: '需要你的选择' }),
@@ -409,10 +602,13 @@ function migrateV1(source) {
       ceilingCardId: cards.some((card) => card.id === 'card_ceiling') ? 'card_ceiling' : '',
     },
     cards,
+    templateVariables: sanitizeTemplateVariables(DEFAULT_CONFIG.templateVariables),
+    customVariables: [],
+    sidebar: { mode: 'auto' },
   };
 }
 
-function pickDefaultCard(cards, type) {
+function pickDefaultCard(cards: CardConfig[], type: CardType): CardConfig | null {
   return cards.find((card) => card.type === type && (card.type === 'ceiling' || card.templateId))
     ?? cards.find((card) => card.type === type)
     ?? cards.find((card) => card.type === 'message')
@@ -420,8 +616,8 @@ function pickDefaultCard(cards, type) {
     ?? null;
 }
 
-export function sanitizeConfig(input) {
-  const source = input && typeof input === 'object' ? input : {};
+export function sanitizeConfig(input: unknown): PluginConfig {
+  const source = (input && typeof input === 'object' ? input : {}) as Record<string, any>;
   const migrated = Array.isArray(source.cards) ? null : migrateV1(source);
   const raw = migrated ?? source;
   const cards = Array.isArray(raw.cards) ? raw.cards.slice(0, 60).map(sanitizeCard) : [];
@@ -431,7 +627,7 @@ export function sanitizeConfig(input) {
   const approvalDefault = pickDefaultCard(cards.filter((card) => card.type !== 'ceiling'), 'standard')
     ?? questionDefault;
   const ceilingDefault = cards.find((card) => card.type === 'ceiling') ?? null;
-  const pick = (value, fallback) => (typeof value === 'string' && ids.has(value) ? value : fallback?.id ?? '');
+  const pick = (value: unknown, fallback: CardConfig | null) => (typeof value === 'string' && ids.has(value) ? value : fallback?.id ?? '');
   return {
     version: 2,
     enabled: cleanBool(raw.enabled, DEFAULT_CONFIG.enabled),
@@ -459,42 +655,42 @@ export function sanitizeConfig(input) {
   };
 }
 
-export function configPath() {
+export function configPath(): string {
   const home = resolve(process.env.DSH_HOME ?? join(homedir(), '.dsh'));
   return join(home, 'integrations', 'dsh-ding-card', 'config.json');
 }
 
 export class CardConfigStore {
-  #path;
-  #config = sanitizeConfig(DEFAULT_CONFIG);
+  #path: string;
+  #config: PluginConfig = sanitizeConfig(DEFAULT_CONFIG);
   #loaded = false;
-  #writing = Promise.resolve();
+  #writing: Promise<void> = Promise.resolve();
 
-  constructor(path = configPath()) {
+  constructor(path: string = configPath()) {
     this.#path = resolve(path);
   }
 
-  get path() {
+  get path(): string {
     return this.#path;
   }
 
-  get() {
+  get(): PluginConfig {
     return structuredClone(this.#config);
   }
 
-  async load() {
+  async load(): Promise<PluginConfig> {
     try {
       const raw = await readFile(this.#path, 'utf8');
       this.#config = sanitizeConfig(JSON.parse(raw.replace(/^\uFEFF/, '')));
     } catch (error) {
-      if (error?.code !== 'ENOENT') throw error;
+      if ((error as NodeJS.ErrnoException)?.code !== 'ENOENT') throw error;
       this.#config = sanitizeConfig(DEFAULT_CONFIG);
     }
     this.#loaded = true;
     return this.get();
   }
 
-  async save(input) {
+  async save(input: unknown): Promise<PluginConfig> {
     this.#config = sanitizeConfig(input);
     this.#loaded = true;
     const payload = `${JSON.stringify(this.#config, null, 2)}\n`;
@@ -509,20 +705,20 @@ export class CardConfigStore {
     return this.get();
   }
 
-  async patch(partial) {
+  async patch(partial: unknown): Promise<PluginConfig> {
     return this.save(mergeConfig(this.get(), partial));
   }
 
-  get loaded() {
+  get loaded(): boolean {
     return this.#loaded;
   }
 }
 
-function isRecord(value) {
+function isRecord(value: unknown): value is Record<string, any> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
-function mergeConfig(base, partial) {
+function mergeConfig(base: PluginConfig, partial: unknown): PluginConfig {
   if (!isRecord(partial)) return base;
   return {
     ...base,

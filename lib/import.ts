@@ -1,4 +1,4 @@
-import { sanitizeCard, CARD_TYPES } from './store.js';
+import { sanitizeCard, CARD_TYPES, type CardConfig } from './store.js';
 
 /**
  * Import a DingTalk card-template JSON (as exported from the DingTalk card
@@ -20,24 +20,34 @@ const TEXT_COMPONENTS = new Set(['BaseText', 'Markdown', 'Text', 'RichText']);
 const BUTTON_COMPONENTS = new Set(['ButtonList', 'SingleButton', 'ButtonBlock', 'ActionButton']);
 const ROOT_COMPONENTS = new Set(['Card', 'StdCard']);
 
+/** 组件树节点（宽松类型：钉钉卡片 JSON）。 */
+export interface TemplateNode {
+  componentName?: string;
+  children?: TemplateNode[];
+  props?: Record<string, any>;
+  [key: string]: any;
+}
+
 /** 递归扫描组件树中所有被引用的变量名：
  * 1) ${var} 形式（钉钉 dynamicString 占位符）；
  * 2) { type: 'variableValue'|'dynamicImage'|..., variable: 'name' } 形式（钉钉变量值引用，variable 非空）。 */
-function collectBoundVariables(tree) {
-  const found = new Set();
+function collectBoundVariables(tree: TemplateNode[]): Set<string> {
+  const found = new Set<string>();
   const regex = /\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g;
-  (function scan(node) {
+  (function scan(node: unknown) {
     if (Array.isArray(node)) {
       node.forEach(scan);
       return;
     }
     if (!node || typeof node !== 'object') return;
-    for (const value of Object.values(node)) {
+    for (const value of Object.values(node as Record<string, unknown>)) {
       if (typeof value === 'string') {
-        let match;
+        let match: RegExpExecArray | null;
         while ((match = regex.exec(value))) found.add(match[1]);
       } else if (value && typeof value === 'object') {
-        if (typeof value.variable === 'string' && value.variable.trim()) found.add(value.variable.trim());
+        if (typeof (value as Record<string, unknown>).variable === 'string' && String((value as Record<string, unknown>).variable).trim()) {
+          found.add(String((value as Record<string, unknown>).variable).trim());
+        }
         scan(value);
       }
     }
@@ -47,32 +57,32 @@ function collectBoundVariables(tree) {
 
 /** 收集文本组件（BaseText/Markdown/Text/RichText）中绑定的变量：
  * 用于识别「按钮回传变量」是否有对应的文本控件展示（如按钮旁显示回传内容）。 */
-function collectTextBoundVariables(tree) {
-  const found = new Set();
+function collectTextBoundVariables(tree: TemplateNode[]): Set<string> {
+  const found = new Set<string>();
   const regex = /\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g;
   walkTree(tree, (node) => {
-    if (!TEXT_COMPONENTS.has(node?.componentName)) return;
+    if (!TEXT_COMPONENTS.has(node?.componentName ?? '')) return;
     const props = node?.props ?? {};
-    const stack = [props];
+    const stack: unknown[] = [props];
     while (stack.length) {
       const item = stack.pop();
       if (typeof item === 'string') {
-        let match;
+        let match: RegExpExecArray | null;
         while ((match = regex.exec(item))) found.add(match[1]);
       } else if (item && typeof item === 'object') {
-        stack.push(...Object.values(item));
+        stack.push(...Object.values(item as Record<string, unknown>));
       }
     }
   });
   return found;
 }
 
-function isObject(value) {
+function isObject(value: unknown): value is Record<string, any> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
 /** Pull plain text out of a dynamicString/dynamicMarkdown/fixed prop. */
-function unwrapText(value) {
+function unwrapText(value: unknown): string {
   if (value == null) return '';
   if (typeof value === 'string') return value;
   if (isObject(value)) {
@@ -83,7 +93,7 @@ function unwrapText(value) {
   return '';
 }
 
-function walkTree(nodes, visit) {
+function walkTree(nodes: TemplateNode[] | undefined, visit: (node: TemplateNode) => void): void {
   for (const node of nodes ?? []) {
     if (!isObject(node)) continue;
     visit(node);
@@ -92,7 +102,7 @@ function walkTree(nodes, visit) {
 }
 
 /** Locate the editor object whether it is a JSON string or an object. */
-function resolveEditor(data) {
+function resolveEditor(data: unknown): Record<string, any> | null {
   if (!isObject(data)) return null;
   if (typeof data.editorData === 'string') {
     try {
@@ -107,11 +117,20 @@ function resolveEditor(data) {
   return null;
 }
 
+/** 提取出的按钮信息。 */
+export interface ImportedButton {
+  label: string;
+  value: string;
+  paramName: string;
+  paramVariable: string;
+  labelVar: string;
+}
+
 /** 从单个按钮对象提取文案/回传参数（兼容 SingleButton 的 props 与 ButtonList 的子项）。 */
-function extractButton(button) {
+function extractButton(button: Record<string, any>): ImportedButton {
   const label = unwrapText(button?.text) || unwrapText(button?.label) || '';
   const params = Array.isArray(button?.params) ? button.params : [];
-  const param = params.find((p) => p && typeof p?.name === 'string' && p.name) ?? params[0];
+  const param = params.find((p: Record<string, any>) => p && typeof p?.name === 'string' && p.name) ?? params[0];
   const paramName = param && typeof param?.name === 'string' ? param.name : '';
   // 钉钉可视化编辑器：回传参数可绑定模板变量（{type:'variable', variable:'btnsAvalue'}）。
   const paramVariable = param && typeof param?.variable === 'string' && param.variable ? param.variable : '';
@@ -125,10 +144,10 @@ function extractButton(button) {
   return { label, value, paramName, paramVariable, labelVar };
 }
 
-function collectButtons(tree) {
-  const out = [];
+function collectButtons(tree: TemplateNode[]): ImportedButton[] {
+  const out: ImportedButton[] = [];
   walkTree(tree, (node) => {
-    if (!BUTTON_COMPONENTS.has(node?.componentName)) return;
+    if (!BUTTON_COMPONENTS.has(node?.componentName ?? '')) return;
     const props = node?.props ?? {};
     if (node.componentName === 'SingleButton' || node.componentName === 'ActionButton') {
       // 单按钮组件：文案在 props.text，回传参数在 props.params。
@@ -147,10 +166,10 @@ function collectButtons(tree) {
   return out;
 }
 
-function collectTexts(tree) {
-  const out = [];
+function collectTexts(tree: TemplateNode[]): string[] {
+  const out: string[] = [];
   walkTree(tree, (node) => {
-    if (!TEXT_COMPONENTS.has(node?.componentName)) return;
+    if (!TEXT_COMPONENTS.has(node?.componentName ?? '')) return;
     const props = node?.props ?? {};
     const text = unwrapText(props.text ?? props.content ?? props.textContent);
     if (text) out.push(text);
@@ -158,11 +177,11 @@ function collectTexts(tree) {
   return out;
 }
 
-function collectRoot(tree) {
-  return (tree ?? []).find((n) => ROOT_COMPONENTS.has(n?.componentName)) ?? null;
+function collectRoot(tree: TemplateNode[]): TemplateNode | null {
+  return (tree ?? []).find((n) => ROOT_COMPONENTS.has(n?.componentName ?? '')) ?? null;
 }
 
-function firstValue(obj, keys) {
+function firstValue(obj: Record<string, any> | undefined, keys: string[]): string {
   for (const key of keys) {
     const value = obj?.[key];
     if (value !== undefined && value !== null && value !== '') return value;
@@ -171,7 +190,7 @@ function firstValue(obj, keys) {
 }
 
 /** This plugin's IM export uses BaseText nodes that keep ${...} placeholders. */
-function isPluginImExport(tree) {
+function isPluginImExport(tree: TemplateNode[]): boolean {
   let found = false;
   walkTree(tree, (node) => {
     if (node?.componentName === 'BaseText') found = true;
@@ -179,7 +198,7 @@ function isPluginImExport(tree) {
   return found;
 }
 
-function parseFieldsText(text) {
+function parseFieldsText(text: string): { label: string; value: string }[] {
   if (!text) return [];
   return text.split('\n').map((line) => {
     const idx = line.indexOf('：');
@@ -192,53 +211,64 @@ function parseFieldsText(text) {
 /** 递归收集文本组件（BaseText/Markdown/Text/RichText）的文本：
  * 覆盖 children 与 props 内嵌套组件（如 CardHeaderV2.titleAfterSlot 的 JSSlot 结构），
  * 避免头部/插槽内的 ${title} 等变量绑定被漏掉导致 title/subtitle 错配。 */
-function collectTextNodesDeep(node, out) {
+function collectTextNodesDeep(node: unknown, out: string[]): void {
   if (Array.isArray(node)) {
     for (const child of node) collectTextNodesDeep(child, out);
     return;
   }
   if (!node || typeof node !== 'object') return;
-  if (typeof node.componentName === 'string' && TEXT_COMPONENTS.has(node.componentName)) {
-    const t = unwrapText(node.props?.text ?? node.props?.content) || '';
+  if (typeof (node as Record<string, any>).componentName === 'string' && TEXT_COMPONENTS.has((node as Record<string, any>).componentName)) {
+    const t = unwrapText((node as Record<string, any>).props?.text ?? (node as Record<string, any>).props?.content) || '';
     if (t.trim()) out.push(t);
   }
-  if (Array.isArray(node.children)) collectTextNodesDeep(node.children, out);
-  const props = node.props;
+  if (Array.isArray((node as Record<string, any>).children)) collectTextNodesDeep((node as Record<string, any>).children, out);
+  const props = (node as Record<string, any>).props;
   if (props && typeof props === 'object') {
     for (const value of Object.values(props)) {
       if (value && typeof value === 'object') {
         // JSSlot 结构：{ type: 'JSSlot', value: [组件...] }
-        if (Array.isArray(value.value)) collectTextNodesDeep(value.value, out);
-        else if (typeof value.componentName === 'string') collectTextNodesDeep(value, out);
+        if (Array.isArray((value as Record<string, any>).value)) collectTextNodesDeep((value as Record<string, any>).value, out);
+        else if (typeof (value as Record<string, any>).componentName === 'string') collectTextNodesDeep(value, out);
       }
     }
   }
+}
+
+/** 音频播放器变量绑定。 */
+export interface AudioPlayerBind {
+  url: string;
+  coverUrl: string;
+  title: string;
+  artist: string;
 }
 
 /** 提取音频播放器组件的变量绑定（url / 封面 / 标题 / 歌手），
  * 供发送测试的效果预览渲染成钉钉风格的播放器卡片。无该组件时返回 null。
  * 兼容钉钉设计器两种组件名：Music（设计器导出名）与 AudioPlayer（官方文档组件名）。
  * 变量取值兼容两种形式：dynamicString ${var}、variableValue/dynamicImage 的 variable 字段。 */
-function extractAudioPlayer(tree) {
-  let found = null;
-  const varNameOf = (value) => {
+function extractAudioPlayer(tree: TemplateNode[]): Partial<AudioPlayerBind> | null {
+  let found: Record<string, string> | null = null;
+  const varNameOf = (value: unknown): string => {
     if (!value || typeof value !== 'object') return '';
-    if (typeof value.variable === 'string' && value.variable.trim()) return value.variable.trim();
-    if (typeof value.content === 'string') {
-      const match = value.content.match(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/);
+    if (typeof (value as Record<string, any>).variable === 'string' && String((value as Record<string, any>).variable).trim()) {
+      return String((value as Record<string, any>).variable).trim();
+    }
+    if (typeof (value as Record<string, any>).content === 'string') {
+      const match = (value as Record<string, any>).content.match(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/);
       if (match) return match[1];
     }
     return '';
   };
-  const scan = (node) => {
+  const scan = (node: unknown): void => {
     if (!node || typeof node !== 'object') return;
     if (Array.isArray(node)) {
       for (const item of node) scan(item);
       return;
     }
-    const name = node.componentName ?? node.component ?? '';
+    const record = node as Record<string, any>;
+    const name = record.componentName ?? record.component ?? '';
     if ((name === 'Music' || name === 'AudioPlayer') && !found) {
-      const props = node.props ?? {};
+      const props = record.props ?? {};
       found = {
         url: varNameOf(props.music) || varNameOf(props.url),
         coverUrl: varNameOf(props.cover) || varNameOf(props.coverUrl),
@@ -247,13 +277,13 @@ function extractAudioPlayer(tree) {
       };
       return;
     }
-    if (Array.isArray(node.children)) scan(node.children);
-    const props = node.props;
+    if (Array.isArray(record.children)) scan(record.children);
+    const props = record.props;
     if (props && typeof props === 'object') {
       for (const value of Object.values(props)) {
         if (value && typeof value === 'object') {
-          if (Array.isArray(value.value)) scan(value.value);
-          else if (typeof value.componentName === 'string' || typeof value.component === 'string') scan(value);
+          if (Array.isArray((value as Record<string, any>).value)) scan((value as Record<string, any>).value);
+          else if (typeof (value as Record<string, any>).componentName === 'string' || typeof (value as Record<string, any>).component === 'string') scan(value);
         }
       }
     }
@@ -261,15 +291,28 @@ function extractAudioPlayer(tree) {
   scan(tree);
   if (!found) return null;
   // 只保留真正绑定了变量的字段（未绑定 = 模板静态值，不在发送测试编辑范围）。
-  const result = {};
-  for (const [key, value] of Object.entries(found)) {
-    if (value) result[key] = value;
+  const result: Partial<AudioPlayerBind> = {};
+  const foundRecord: Record<string, string> = found as Record<string, string>;
+  for (const [key, value] of Object.entries(foundRecord)) {
+    if (value) (result as Record<string, string>)[key] = value;
   }
   return Object.keys(result).length > 0 ? result : null;
 }
 
-function parsePluginIm(tree, cardData) {
-  const textNodes = [];
+/** 解析出的卡片内容。 */
+export interface ParsedCard {
+  title: string;
+  subtitle: string;
+  content: string;
+  fields: { label: string; value: string }[];
+  options: { label: string; value: string }[];
+  optionParam: string;
+  state: string;
+  image: string;
+}
+
+function parsePluginIm(tree: TemplateNode[], cardData: Record<string, any>): ParsedCard {
+  const textNodes: string[] = [];
   collectTextNodesDeep(tree, textNodes);
   const buttons = collectButtons(tree);
   const options = buttons.map((b) => ({ label: b.label, value: b.value || b.label }));
@@ -279,7 +322,7 @@ function parsePluginIm(tree, cardData) {
   let content = '';
   let state = '';
   let fieldsText = '';
-  const staticTexts = [];
+  const staticTexts: string[] = [];
   for (const text of textNodes) {
     if (text.includes('${title}')) title = text;
     else if (text.includes('${subtitle}')) subtitle = text;
@@ -308,7 +351,7 @@ function parsePluginIm(tree, cardData) {
 }
 
 /** Generic walk for arbitrary DingTalk templates. */
-function parseGeneric(tree, cardData) {
+function parseGeneric(tree: TemplateNode[], cardData: Record<string, any>): ParsedCard {
   const root = collectRoot(tree);
   const title = unwrapText(root?.props?.cardName) || firstValue(cardData, ['title']);
   const subtitle = unwrapText(root?.props?.tagText) || firstValue(cardData, ['subtitle']);
@@ -330,22 +373,27 @@ function parseGeneric(tree, cardData) {
   };
 }
 
+/** importDingtalkJson 选项。 */
+export interface ImportOpts {
+  name?: string;
+}
+
 /**
  * Convert a DingTalk / plugin card-template JSON into a usable card config.
  * opts.name 可指定卡片名（例如导入文件去掉 .json 后缀的文件名），优先于 JSON 内标题。
  * @returns sanitized card (id will be regenerated by caller on save)
  */
-export function importDingtalkJson(textOrObject, opts = {}) {
+export function importDingtalkJson(textOrObject: string | Record<string, any>, opts: ImportOpts = {}): CardConfig {
   const raw = typeof textOrObject === 'string' ? JSON.parse(textOrObject) : textOrObject;
   const editor = resolveEditor(raw);
-  const tree = editor?.schema?.componentsTree ?? raw?.schema?.componentsTree ?? [];
+  const tree: TemplateNode[] = editor?.schema?.componentsTree ?? raw?.schema?.componentsTree ?? [];
   const variableList = Array.isArray(editor?.variableList)
     ? editor.variableList
     : (Array.isArray(raw?.variableList) ? raw.variableList : []);
   const cardData = isObject(editor?.mockData?.cardData)
     ? editor.mockData.cardData
     : (isObject(raw?.mockData?.cardData) ? raw.mockData.cardData : (isObject(raw?.cardData) ? raw.cardData : {}));
-  const declaredNames = new Set(variableList.map((v) => (typeof v?.name === 'string' ? v.name : '')));
+  const declaredNames = new Set(variableList.map((v: Record<string, any>) => (typeof v?.name === 'string' ? v.name : '')));
 
   const hasStd = (tree ?? []).some((n) => n?.componentName === 'StdCard');
   // 自动识别卡片类型：StdCard 组件 → 标准卡片；插件导出的吊顶模板顶层 type=onebox → 吊顶卡片；
@@ -359,15 +407,15 @@ export function importDingtalkJson(textOrObject, opts = {}) {
   // 选项数量以模板声明的 optionN 变量为准（钉钉后台模板可能只声明部分选项变量，
   // 或像纯展示吊顶卡一样没有按钮组件但声明了选项变量），其次才看组件按钮数。
   const declaredOptions = variableList
-    .map((v) => (typeof v?.name === 'string' ? v.name : ''))
-    .filter((name) => /^option\d+$/.test(name))
-    .map((name) => Number(name.replace('option', '')));
+    .map((v: Record<string, any>) => (typeof v?.name === 'string' ? v.name : ''))
+    .filter((name: string) => /^option\d+$/.test(name))
+    .map((name: string) => Number(name.replace('option', '')));
   const maxOptions = Math.min(6, Math.max(1,
     declaredOptions.length || options.length || 4));
   // 组件树实际绑定（${var} 占位符引用）的变量；测试参数只显示组件真正用到的字段，
   // 模板声明了但组件没绑定的变量（如副标题固定文本、未放置图片组件）不再出现。
   const bound = collectBoundVariables(tree);
-  const builtinVariables = {};
+  const builtinVariables: Record<string, string> = {};
   for (const key of ['title', 'subtitle', 'content', 'fields', 'image', 'state']) {
     if (bound.has(key)) builtinVariables[key] = key;
   }
@@ -378,7 +426,7 @@ export function importDingtalkJson(textOrObject, opts = {}) {
   const rawButtons = collectButtons(tree);
   const buttons = rawButtons.length > 0
     ? rawButtons
-    : (parsed.options ?? []).map((o) => ({ label: o.label, value: o.value, paramName: o.paramName ?? '', paramVariable: '', labelVar: '' }));
+    : (parsed.options ?? []).map((o) => ({ label: o.label, value: o.value, paramName: '', paramVariable: '', labelVar: '' }));
   const correctedButtons = buttons.map((b) => {
     if (!b.labelVar || !declaredNames.has(b.labelVar)) return b;
     const expected = `${b.labelVar}value`;
@@ -404,17 +452,17 @@ export function importDingtalkJson(textOrObject, opts = {}) {
   const textValueVars = optionValueVars.filter((name) => textBound.has(name));
   if (optionVars.length === 0) {
     // 无变量占位符的按钮（legacy 固定文案）或纯 optionN 模板：回退原有 optionN 声明逻辑。
-    optionVars = Array.from({ length: maxOptions }, (_e, i) => `option${i + 1}`)
-      .filter((name) => bound.has(name) && declaredNames.has(name));
+    optionVars = Array.from({ length: maxOptions }, (_e: unknown, i: number) => `option${i + 1}`)
+      .filter((name: string) => bound.has(name) && declaredNames.has(name));
   }
 
   // 钉钉可视化模板的 mockData 提供真实示例值：导入时按变量名填充到自定义变量，
   // 发送测试与变量集 Mock 直接拿到可用默认值（仅 string 类型取字符串）。
   // 选项按钮文案变量（optionVars）标记为「按钮」类型：mock 合并为 {text: 文案, value: 回传内容}，
   // 与发送测试选项按钮区块、变量集按钮 Mock 双向绑定使用同一数据结构。
-  const mockOf = (name) => (typeof name === 'string' && name && typeof cardData?.[name] === 'string' ? cardData[name] : undefined);
+  const mockOf = (name: string) => (typeof name === 'string' && name && typeof cardData?.[name] === 'string' ? cardData[name] : undefined);
   const optionVarSet = new Set(optionVars);
-  const customVariables = variableList.map((v) => {
+  const customVariables = variableList.map((v: Record<string, any>) => {
     const name = firstValue(v, ['name', 'varKey', 'key']) ?? '';
     const example = firstValue(v, ['exampleValue', 'example', 'value', 'defaultValue', 'default']) ?? '';
     const mock = mockOf(name);

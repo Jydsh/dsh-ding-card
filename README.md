@@ -1,6 +1,6 @@
 # dsh-ding-card
 
-> 钉钉 AI 卡片交互插件 · 正式版本 v2026.10.31（版本号采用年月日管理）
+> 钉钉 AI 卡片交互插件 · 正式版本 v2026.10.31-bate1（版本号采用年月日管理）
 
 把 DeepSeek Harness（DSH）的人机交互变成**钉钉互动卡片**：当 Agent 需要提问、审批或展示结构化信息时，插件自动投放一张带推荐选项的卡片；用户点击按钮后，答案直接回到正在流式运行的会话里。Web 界面与钉钉卡片同时可用，先答者生效。
 
@@ -33,7 +33,7 @@
 
 ### 版本检查与更新引导
 - 插件启动时自动检查 GitHub Release 最新版本（`api.github.com` 优先，失败回退 `releases.atom`）。
-- 侧边栏标题旁显示当前版本：`v2026.10.31`；发现新版本时变醒目色并显示 `v2026.10.31 ↑ v2026.11.01`。
+- 侧边栏标题旁显示当前版本：`v2026.10.31-bate1`；发现新版本时变醒目色并显示 `v2026.10.31-bate1 ↑ v2026.11.01`。
 - 点击版本号可手动检查 / 复制更新命令；发现新版本时顶部出现更新横幅，一键复制 `dsh plugin --profile <profile> add github:Jydsh/dsh-ding-card#v<新版本>` 命令。
 
 ### AI 自主使用（Agent 工具）
@@ -80,7 +80,7 @@ dsh plugin --profile <profile> add github:Jydsh/dsh-ding-card
 指定版本安装（配合 GitHub Release tag）：
 
 ```bash
-dsh plugin --profile desktop add github:Jydsh/dsh-ding-card#v2026.10.31
+dsh plugin --profile desktop add github:Jydsh/dsh-ding-card#v2026.10.31-bate1
 ```
 
 > **关于 `<profile>` 环境名**：
@@ -88,7 +88,7 @@ dsh plugin --profile desktop add github:Jydsh/dsh-ding-card#v2026.10.31
 > - 若执行报错 `profile "xxx" is managed exclusively by the Electron application`，说明该环境正被 DSH 应用（Electron）独占：**先退出 DSH 再执行命令行安装**，或直接改用上面的 DSH 界面「添加插件」方式安装。
 > - 安装到哪个 profile，插件就只在该环境的 DSH 实例中生效。
 
-> 本插件为**纯 JavaScript、无构建步骤**，GitHub 源码安装时无需执行任何构建脚本，**不需要配置 pnpm 构建白名单（allowBuilds）**，安装即用。
+> 本插件为**零构建安装**：服务端以 TypeScript 开发（已迁移模块在 `lib/*.ts`），`tsc` 编译产物 `dist/` 随源码提交仓库，`main` 直接指向预编译的 JS——GitHub 源码安装时无需执行任何构建脚本，**不需要配置 pnpm 构建白名单（allowBuilds）**，安装即用。
 
 > **更新插件**：插件侧边栏会**自动检查 GitHub Release 新版本**并给出更新命令（也可手动点击版本号检查）。升级只需把命令里的版本号换成最新 tag：
 >
@@ -115,27 +115,34 @@ dsh plugin --profile desktop add github:Jydsh/dsh-ding-card#v2026.10.31
 ## 开发与测试
 
 ```bash
+npm run build                                   # tsc 编译 lib/*.ts → dist/（产物随源码提交）
 node --test "D:\dsh\dsh-ding-card\test\*.test.mjs"   # 42/42
-node --check lib/export.js lib/tools.js              # 语法检查
+node --check lib/export.js lib/tools.js              # 语法检查（未迁移模块）
 ```
 
-- 生效规则：`tools.js` / `export.js` / `cards.js` 改动需重启 DSH；`client.js` 改动重开管理页即可。
+- **技术架构（混合）**：服务端模块逐步迁移 TypeScript（`store.ts` / `rpc.ts` / `updater.ts` 已完成，其余服务端模块迁移中）；`client.js` 保持 JavaScript（浏览器专用模块格式，TS 收益低）。类型契约集中在 `store.ts`（卡片/变量/配置结构）与 `rpc.ts`（管理页 RPC 消息），跨模块共享。
+- 生效规则：`tools.js` / `export.js` / `cards.js` 改动需重启 DSH；`client.js` 改动重开管理页即可；`.ts` 改动需 `npm run build` 后重启。
 
 ## 目录结构
 
 ```
 lib/
-  index.js        插件入口与安装
-  tools.js        Agent 工具（ding_card_list / ding_var_list / ding_card_send）
-  cards.js        卡片生命周期（发送/回调/回收/持久化）
-  export.js       卡片数据构建与模板导出
-  import.js       钉钉模板 JSON 导入
-  store.js        配置与变量集
-  interactions.js 提问/审批卡片接入
-  stream-bridge.js 钉钉 Stream 回调
-  dshim.js        dsh-im 集成
-  rpc.js          管理页 RPC
-  client.js       管理界面（卡片库/变量集/发送测试/日志）
+  store.ts        配置与变量集（已转 TS，类型契约中心）
+  rpc.ts          管理页 RPC（已转 TS）
+  updater.ts      版本检查与更新引导（已转 TS）
+  log.ts          事件日志（已转 TS）
+  index.ts        插件入口与安装（已转 TS）
+  dshim.ts        dsh-im 集成（已转 TS）
+  dingtalk.ts     钉钉 API 客户端（已转 TS）
+  export.ts       卡片数据构建与模板导出（已转 TS）
+  import.ts       钉钉模板 JSON 导入（已转 TS）
+  tools.js        Agent 工具（ding_card_list / ding_var_list / ding_card_send，保持 JS）
+  cards.js        卡片生命周期（发送/回调/回收/持久化，保持 JS）
+  interactions.js 提问/审批卡片接入（保持 JS）
+  stream-bridge.js 钉钉 Stream 回调（保持 JS）
+  routing.js      路由解析（保持 JS）
+  client.js       管理界面（保持 JS，浏览器模块格式）
+dist/             tsc 编译产物（随源码提交，main 指向 dist/index.js）
 docs/             架构与模板文档
 test/             单元测试
 ```

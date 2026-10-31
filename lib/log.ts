@@ -1,10 +1,29 @@
 const MAX_ENTRIES = 120;
 
-export function createEventLog(logger = console) {
-  const entries = [];
+/** 日志级别。 */
+export type LogLevel = 'info' | 'warn' | 'error';
+
+/** 事件日志条目。 */
+export interface EventLogEntry {
+  id: number;
+  at: string;
+  level: LogLevel;
+  message: string;
+  details?: unknown;
+}
+
+/** 事件日志（环形缓冲）。 */
+export interface EventLog {
+  record(level: LogLevel, message: string, details?: unknown): EventLogEntry;
+  list(limit?: number): EventLogEntry[];
+  clear(): void;
+}
+
+export function createEventLog(logger: { info?: (...args: unknown[]) => void; warn?: (...args: unknown[]) => void; error?: (...args: unknown[]) => void } = console): EventLog {
+  const entries: EventLogEntry[] = [];
   let sequence = 0;
   return Object.freeze({
-    record(level, message, details) {
+    record(level: LogLevel, message: string, details?: unknown) {
       const entry = {
         id: ++sequence,
         at: new Date().toISOString(),

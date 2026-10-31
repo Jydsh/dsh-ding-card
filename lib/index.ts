@@ -4,7 +4,7 @@ import { inspectDshIm, readDingtalkBots } from './dshim.js';
 import { installInteractions } from './interactions.js';
 import { createEventLog } from './log.js';
 import { createRouteResolver } from './routing.js';
-import { installRpc } from './rpc.js';
+import { installRpc, type DshCtx } from './rpc.js';
 import { CardConfigStore } from './store.js';
 import { installStreamBridge } from './stream-bridge.js';
 import { installCardTools } from './tools.js';
@@ -13,14 +13,36 @@ import { checkLatestVersion, getCurrentVersion, isAtLeast } from './updater.js';
 export const name = 'dsh-ding-card';
 export const inject = ['connection', 'credentials'];
 
-function makeLogger(ctx) {
+/** DSH 日志器（宽松类型）。 */
+export interface DshLogger {
+  info?: (...args: unknown[]) => void;
+  warn?: (...args: unknown[]) => void;
+  error?: (...args: unknown[]) => void;
+  debug?: (...args: unknown[]) => void;
+}
+
+/** DSH 运行时上下文（宽松类型：DSH API 未提供完整类型定义）。 */
+export interface DshContext extends DshCtx {
+  logger?: DshLogger | ((scope: string) => DshLogger);
+  effect?: (dispose: () => void, label: string) => unknown;
+  provide?: (key: string, value: unknown) => unknown;
+  [key: string]: unknown;
+}
+
+/** apply 配置参数。 */
+export interface ApplyConfig {
+  configPath?: string;
+  [key: string]: unknown;
+}
+
+function makeLogger(ctx: DshContext): DshLogger {
   const logger = typeof ctx?.logger === 'function' ? ctx.logger('dsh-ding-card') : ctx?.logger;
-  const safe = logger && typeof logger === 'object' ? logger : console;
+  const safe: DshLogger = logger && typeof logger === 'object' ? logger : console;
   return {
-    info: (...args) => safe.info?.(...args),
-    warn: (...args) => safe.warn?.(...args),
-    error: (...args) => safe.error?.(...args),
-    debug: (...args) => safe.debug?.(...args),
+    info: (...args: unknown[]) => safe.info?.(...args),
+    warn: (...args: unknown[]) => safe.warn?.(...args),
+    error: (...args: unknown[]) => safe.error?.(...args),
+    debug: (...args: unknown[]) => safe.debug?.(...args),
   };
 }
 
@@ -31,21 +53,23 @@ function makeLogger(ctx) {
  * attaches to dsh-im's existing Stream connection, so no second connection is
  * opened and no bot credentials are duplicated.
  */
-export async function apply(ctx, config = {}) {
+export async function apply(ctx: DshContext, config: ApplyConfig = {}): Promise<void> {
   const logger = makeLogger(ctx);
+  // .js 模块的 logger 参数推断为 Console（来自默认值），做一次类型适配。
+  const loggerArg = logger as unknown as Console;
   const store = new CardConfigStore(config.configPath);
   try {
     await store.load();
   } catch (error) {
-    logger.error?.('[dsh-ding-card] failed to load config, using defaults:', error?.message ?? error);
+    logger.error?.('[dsh-ding-card] failed to load config, using defaults:', (error as Error)?.message ?? error);
   }
   const events = createEventLog(logger);
-  const bridge = await installStreamBridge({ logger });
-  const api = createDingTalkApi({ logger });
-  const cards = createCardService({ api, store, bridge, events, logger });
-  const interactions = installInteractions(ctx, { store, cards, events, logger });
-  const resolveTarget = createRouteResolver(ctx, { store, events, logger });
-  const tools = installCardTools(ctx, { store, cards, resolveTarget, events, logger });
+  const bridge = await installStreamBridge({ logger: loggerArg }) as Record<string, any>;
+  const api = createDingTalkApi({ logger: loggerArg });
+  const cards = createCardService({ api, store, bridge, events, logger: loggerArg }) as Record<string, any>;
+  const interactions = installInteractions(ctx, { store, cards, events, logger: loggerArg });
+  const resolveTarget = createRouteResolver(ctx, { store, events, logger: loggerArg });
+  const tools = installCardTools(ctx, { store, cards, resolveTarget, events, logger: loggerArg });
 
   const updater = { current: getCurrentVersion, check: checkLatestVersion, isAtLeast };
 
@@ -70,7 +94,7 @@ export async function apply(ctx, config = {}) {
   try {
     rpc.install();
   } catch (error) {
-    events.record('error', `管理接口注册失败：${error?.message ?? error}`);
+    events.record('error', `管理接口注册失败：${(error as Error)?.message ?? error}`);
   }
 
   const dispose = () => {

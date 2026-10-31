@@ -12,21 +12,31 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+/** 最新版本信息（GitHub Release 检查结果）。 */
+export interface LatestVersionInfo {
+  /** 最新版本号（YYYY.MM.DD） */
+  version: string;
+  /** 来源：api=GitHub REST API / atom=releases.atom 回退 */
+  source: 'api' | 'atom';
+}
+
 const REPO = 'Jydsh/dsh-ding-card';
 const API_LATEST = `https://api.github.com/repos/${REPO}/releases/latest`;
 const ATOM_URL = `https://github.com/${REPO}/releases.atom`;
 const REQUEST_TIMEOUT_MS = 8000;
 
-/** 归一化为纯年月日版本号（去掉 v 前缀、校验格式），不合法返回 null */
-export function normalizeVersion(value) {
+/** 归一化为年月日版本号（去掉 v 前缀；支持 prerelease 后缀如 -bate1），不合法返回 null */
+export function normalizeVersion(value: unknown): string | null {
   const v = String(value ?? '').trim().replace(/^v/i, '');
-  return /^\d{4}\.\d{1,2}\.\d{1,2}$/.test(v) ? v : null;
+  return /^\d{4}\.\d{1,2}\.\d{1,2}(?:-[0-9A-Za-z.-]+)?$/.test(v) ? v : null;
 }
 
 /** 当前已安装版本（读 package.json），读取失败返回 null */
-export function getCurrentVersion() {
+export function getCurrentVersion(): string | null {
   try {
-    const pkg = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'package.json'), 'utf8'));
+    const pkg = JSON.parse(
+      readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'package.json'), 'utf8'),
+    ) as { version?: unknown };
     return normalizeVersion(pkg.version);
   } catch {
     return null;
@@ -35,9 +45,9 @@ export function getCurrentVersion() {
 
 /**
  * 检查 GitHub 最新 Release 版本。
- * @returns {Promise<{version: string, source: 'api'|'atom'} | null>} 网络不可达或解析失败时返回 null
+ * @returns 网络不可达或解析失败时返回 null
  */
-export async function checkLatestVersion() {
+export async function checkLatestVersion(): Promise<LatestVersionInfo | null> {
   // 1) GitHub REST API
   try {
     const res = await fetch(API_LATEST, {
@@ -45,11 +55,13 @@ export async function checkLatestVersion() {
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
     if (res.ok) {
-      const data = await res.json();
+      const data = (await res.json()) as { tag_name?: unknown };
       const tag = normalizeVersion(data?.tag_name);
       if (tag) return { version: tag, source: 'api' };
     }
-  } catch { /* 回退 atom */ }
+  } catch {
+    /* 回退 atom */
+  }
 
   // 2) releases.atom（github.com 域名）
   try {
@@ -63,14 +75,16 @@ export async function checkLatestVersion() {
       const tag = normalizeVersion(match?.[1]);
       if (tag) return { version: tag, source: 'atom' };
     }
-  } catch { /* 网络不可达 */ }
+  } catch {
+    /* 网络不可达 */
+  }
 
   return null;
 }
 
 /** 年月日版本比较：current 是否不低于 latest（同格式，字符串按位补零后比较） */
-export function isAtLeast(current, latest) {
+export function isAtLeast(current: string | null, latest: string | null): boolean {
   if (!current || !latest) return false;
-  const norm = (v) => String(v).split('.').map((n) => n.padStart(2, '0')).join('.');
+  const norm = (v: string) => v.split('.').map((n) => n.padStart(2, '0')).join('.');
   return norm(current) >= norm(latest);
 }
