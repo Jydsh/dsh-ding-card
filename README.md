@@ -31,6 +31,11 @@
 - **回调日志**：记录每个按钮点击的回传值详情。
 - **AI 流式填充**：AI 卡片逐 key 流式渲染，失败自动重试并落盘 `stream_failures.json` 明细。
 
+### 版本检查与更新引导
+- 插件启动时自动检查 GitHub Release 最新版本（`api.github.com` 优先，失败回退 `releases.atom`）。
+- 侧边栏标题旁显示当前版本：`v2026.10.29`；发现新版本时变醒目色并显示 `v2026.10.29 ↑ v2026.11.01`。
+- 点击版本号可手动检查 / 复制更新命令；发现新版本时顶部出现更新横幅，一键复制 `dsh plugin --profile <profile> add github:Jydsh/dsh-ding-card#v<新版本>` 命令。
+
 ### AI 自主使用（Agent 工具）
 插件向 Agent 提供三个工具，使其能**自己判断用哪张卡、怎么传参**：
 
@@ -84,6 +89,14 @@ dsh plugin --profile desktop add github:Jydsh/dsh-ding-card#v2026.10.29
 > - 安装到哪个 profile，插件就只在该环境的 DSH 实例中生效。
 
 > 本插件为**纯 JavaScript、无构建步骤**，GitHub 源码安装时无需执行任何构建脚本，**不需要配置 pnpm 构建白名单（allowBuilds）**，安装即用。
+
+> **更新插件**：插件侧边栏会**自动检查 GitHub Release 新版本**并给出更新命令（也可手动点击版本号检查）。升级只需把命令里的版本号换成最新 tag：
+>
+> ```bash
+> dsh plugin --profile desktop add github:Jydsh/dsh-ding-card#v2026.11.01
+> ```
+>
+> 更新后**重启 DSH** 生效。
 
 > **前提**：执行安装的 DSH 服务器需能访问 GitHub（源码拉取需要网络）。无法访问时，可将本地 `npm pack` 生成的 `.tgz` 包拷入服务器，改用「本地目录路径 / 本地文件」方式安装。
 
