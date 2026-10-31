@@ -1,6 +1,6 @@
 # dsh-ding-card
 
-> 钉钉 AI 卡片交互插件 · 正式版本 v2026.10.29（版本号采用年月日管理）
+> 钉钉 AI 卡片交互插件 · 正式版本 v2026.10.31（版本号采用年月日管理）
 
 把 DeepSeek Harness（DSH）的人机交互变成**钉钉互动卡片**：当 Agent 需要提问、审批或展示结构化信息时，插件自动投放一张带推荐选项的卡片；用户点击按钮后，答案直接回到正在流式运行的会话里。Web 界面与钉钉卡片同时可用，先答者生效。
 
@@ -33,7 +33,7 @@
 
 ### 版本检查与更新引导
 - 插件启动时自动检查 GitHub Release 最新版本（`api.github.com` 优先，失败回退 `releases.atom`）。
-- 侧边栏标题旁显示当前版本：`v2026.10.29`；发现新版本时变醒目色并显示 `v2026.10.29 ↑ v2026.11.01`。
+- 侧边栏标题旁显示当前版本：`v2026.10.31`；发现新版本时变醒目色并显示 `v2026.10.31 ↑ v2026.11.01`。
 - 点击版本号可手动检查 / 复制更新命令；发现新版本时顶部出现更新横幅，一键复制 `dsh plugin --profile <profile> add github:Jydsh/dsh-ding-card#v<新版本>` 命令。
 
 ### AI 自主使用（Agent 工具）
@@ -80,7 +80,7 @@ dsh plugin --profile <profile> add github:Jydsh/dsh-ding-card
 指定版本安装（配合 GitHub Release tag）：
 
 ```bash
-dsh plugin --profile desktop add github:Jydsh/dsh-ding-card#v2026.10.29
+dsh plugin --profile desktop add github:Jydsh/dsh-ding-card#v2026.10.31
 ```
 
 > **关于 `<profile>` 环境名**：

@@ -1,6 +1,6 @@
 {
   "name": "dsh-ding-card",
-  "version": "2026.10.29",
+  "version": "2026.10.31",
   "description": "钉钉 AI 卡片交互插件：把 DSH 的提问与审批变成钉钉互动卡片，并复用 dsh-im 的钉钉机器人。",
   "keywords": [
     "deepseek-harness",
