@@ -83,15 +83,7 @@ dsh plugin --profile desktop add github:Jydsh/dsh-ding-card#v2026.10.29
 > - 若执行报错 `profile "xxx" is managed exclusively by the Electron application`，说明该环境正被 DSH 应用（Electron）独占：**先退出 DSH 再执行命令行安装**，或直接改用上面的 DSH 界面「添加插件」方式安装。
 > - 安装到哪个 profile，插件就只在该环境的 DSH 实例中生效。
 
-> **关于 pnpm 构建脚本白名单（allowBuilds）**：pnpm 10+ 默认不执行 Git 依赖的 lifecycle 脚本（安全机制）。本插件为**纯 JavaScript、无构建产物**，`prepare` 仅做安装校验，被拦截不影响功能。如安装时提示需要放行构建脚本，请在对应 DSH profile 的 `pnpm-workspace.yaml` 中把本插件加入白名单后重新安装：
->
-> ```yaml
-> # ~/.dsh/profiles/<profile>/pnpm-workspace.yaml
-> onlyBuiltDependencies:
->   - dsh-ding-card
-> ```
->
-> （旧版 pnpm v9 字段名为 `allowBuilds`，写法相同。）
+> 本插件为**纯 JavaScript、无构建步骤**，GitHub 源码安装时无需执行任何构建脚本，**不需要配置 pnpm 构建白名单（allowBuilds）**，安装即用。
 
 > **前提**：执行安装的 DSH 服务器需能访问 GitHub（源码拉取需要网络）。无法访问时，可将本地 `npm pack` 生成的 `.tgz` 包拷入服务器，改用「本地目录路径 / 本地文件」方式安装。
 
