@@ -7,7 +7,7 @@ import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
 import { pathToFileURL } from 'node:url';
 
-import { CARD_CALLBACK_TOPIC, installStreamBridge } from '../lib/stream-bridge.js';
+import { CARD_CALLBACK_TOPIC, installStreamBridge } from '../dist/stream-bridge.js';
 
 // 探测 dsh-im / dingtalk-stream 所在的 DSH profile：
 // 优先取环境变量，缺省时回退到用户默认安装位置（~/.dsh/profiles/desktop）。

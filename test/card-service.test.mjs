@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { createCardService } from '../lib/cards.js';
-import { sanitizeConfig } from '../lib/store.js';
+import { createCardService } from '../dist/cards.js';
+import { sanitizeConfig } from '../dist/store.js';
 
 function makeConfig(overrides = {}) {
   return sanitizeConfig({

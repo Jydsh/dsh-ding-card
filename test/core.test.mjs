@@ -1,10 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { botIdFor, parseConversationKey } from '../lib/dshim.js';
-import { callbackParams, pickApproval, pickChoice, questionMarkdown } from '../lib/cards.js';
-import { buildCardData, resolvePlaceholders } from '../lib/export.js';
-import { DEFAULT_VARIABLES, sanitizeCard, sanitizeConfig } from '../lib/store.js';
+import { botIdFor, parseConversationKey } from '../dist/dshim.js';
+import { callbackParams, pickApproval, pickChoice, questionMarkdown } from '../dist/cards.js';
+import { buildCardData, resolvePlaceholders } from '../dist/export.js';
+import { DEFAULT_VARIABLES, sanitizeCard, sanitizeConfig } from '../dist/store.js';
 
 test('sanitizeConfig fills defaults', () => {
   const config = sanitizeConfig({

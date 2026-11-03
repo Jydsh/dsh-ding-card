@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { installCardTools } from '../lib/tools.js';
+import { installCardTools } from '../dist/tools.js';
 
 test('card tools register list and send with the current session', async () => {
   const registered = [];

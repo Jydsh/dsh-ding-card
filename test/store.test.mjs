@@ -4,7 +4,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { CardConfigStore, sanitizeCustomVariables, sanitizeCard, sanitizeTemplateVariables } from '../lib/store.js';
+import { CardConfigStore, sanitizeCustomVariables, sanitizeCard, sanitizeTemplateVariables } from '../dist/store.js';
 
 test('legacy config without templateVariables falls back to default template variables', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'dsh-ding-card-'));

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { apply } from '../lib/index.js';
+import { apply } from '../dist/index.js';
 
 test('host plugin mounts and serves the status RPC', async () => {
   const handlers = [];

@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { exportDingtalkTemplate } from '../lib/export.js';
-import { sanitizeCard } from '../lib/store.js';
+import { exportDingtalkTemplate } from '../dist/export.js';
+import { sanitizeCard } from '../dist/store.js';
 
 function find(nodes, name) {
   for (const node of nodes ?? []) {

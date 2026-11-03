@@ -403,6 +403,32 @@ export function importDingtalkJson(textOrObject, opts = {}) {
     // 组件树实际绑定（${var} 占位符引用）的变量；测试参数只显示组件真正用到的字段，
     // 模板声明了但组件没绑定的变量（如副标题固定文本、未放置图片组件）不再出现。
     const bound = collectBoundVariables(tree);
+    // 富文本（Markdown）组件兜底绑定：钉钉模板的 Markdown 组件常见「valueType: variable 但
+    // variable 为空」的形态（设计器里拖入富文本组件后未完成变量绑定），此时模板声明了
+    // markdown 类型的变量（通常名为 content），发送测试的富文本内容却没有可写入的通道。
+    // 按变量列表中的 markdown 类型变量兜底绑定，使 params 能携带富文本内容正常渲染。
+    {
+        let mdVariable = '';
+        walkTree(tree, (node) => {
+            if (mdVariable || node?.componentName !== 'Markdown')
+                return;
+            const content = node?.props?.content;
+            const lang = content?.defaultLang || 'zh_Hans';
+            const inner = content?.content?.[lang] ?? content?.content?.zh_Hans;
+            if (inner?.type !== 'dynamicMarkdown')
+                return;
+            const variable = typeof inner?.variable === 'string' ? inner.variable.trim() : '';
+            // 已绑定变量或有意固定默认值（fixed）的富文本不兜底
+            if (variable || inner?.valueType === 'fixed')
+                return;
+            const markdownVar = variableList.find((v) => String(v?.type ?? '') === 'markdown');
+            const name = markdownVar?.name ?? (declaredNames.has('content') ? 'content' : '');
+            if (name)
+                mdVariable = String(name);
+        });
+        if (mdVariable)
+            bound.add(mdVariable);
+    }
     const builtinVariables = {};
     for (const key of ['title', 'subtitle', 'content', 'fields', 'image', 'state']) {
         if (bound.has(key))

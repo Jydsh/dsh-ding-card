@@ -351,6 +351,15 @@ export function sanitizeTemplateVariables(input) {
 export function sanitizeCard(input) {
     const source = (input && typeof input === 'object' ? input : {});
     const type = CARD_TYPES.includes(source.type) ? source.type : 'message';
+    const variables = sanitizeVariables(source.variables ?? DEFAULT_VARIABLES);
+    // 富文本（Markdown）变量兜底：旧版本导入的卡片若模板存在「valueType:variable 但 variable 为空」
+    // 的 Markdown 组件（设计器拖入富文本后未完成变量绑定），其 variables 会缺失 content 映射，
+    // 导致发送测试的富文本内容无法写入 params。加载时按模板变量列表中的 markdown 类型变量自动补齐。
+    if (!variables.content) {
+        const mdVariable = unboundMarkdownVariable(source.sourceJson);
+        if (mdVariable)
+            variables.content = mdVariable;
+    }
     return {
         id: /^card_[A-Za-z0-9_-]{1,40}$/.test(source.id ?? '') ? source.id : `card_${randomUUID().slice(0, 8)}`,
         name: cleanString(source.name, '未命名卡片', 60),
@@ -363,10 +372,59 @@ export function sanitizeCard(input) {
         // 回收卡片开关：交互（点击/回复）后，卡片消息从会话中收回（撤回）；
         // 勾选=true 时收回卡片，但交互信息仍用于对话生成；false 时卡片保留在会话（仅更新状态）。
         recycleOnDone: cleanBool(source.recycleOnDone, false),
-        variables: sanitizeVariables(source.variables ?? DEFAULT_VARIABLES),
+        variables,
         design: sanitizeDesign(source.design),
         customVariables: sanitizeCustomVariables(source.customVariables),
     };
+}
+/** 从模板 sourceJson 中查找「意图绑变量但未绑定」的 Markdown 富文本组件对应的变量名：
+ * 模板变量列表声明了 markdown 类型变量（通常为 content），且组件 valueType:variable 但 variable 为空。 */
+function unboundMarkdownVariable(sourceJson) {
+    if (typeof sourceJson !== 'string' || !sourceJson)
+        return '';
+    let raw;
+    try {
+        raw = JSON.parse(sourceJson);
+    }
+    catch {
+        return '';
+    }
+    const editor = typeof raw?.editorData === 'string'
+        ? (() => { try {
+            return JSON.parse(raw.editorData);
+        }
+        catch {
+            return null;
+        } })()
+        : (isRecord(raw?.editorData) ? raw.editorData : raw);
+    const tree = editor?.schema?.componentsTree ?? raw?.schema?.componentsTree ?? [];
+    const variableList = Array.isArray(editor?.variableList)
+        ? editor.variableList
+        : (Array.isArray(raw?.variableList) ? raw.variableList : []);
+    let found = '';
+    (function scan(nodes) {
+        for (const node of nodes ?? []) {
+            if (found)
+                return;
+            if (!node || typeof node !== 'object')
+                continue;
+            const n = node;
+            if (n.componentName === 'Markdown') {
+                const content = n?.props?.content;
+                const lang = content?.defaultLang || 'zh_Hans';
+                const inner = content?.content?.[lang] ?? content?.content?.zh_Hans;
+                const variable = typeof inner?.variable === 'string' ? inner.variable.trim() : '';
+                if (inner?.type === 'dynamicMarkdown' && !variable && inner?.valueType !== 'fixed') {
+                    const mdVar = variableList.find((v) => String(v?.type ?? '') === 'markdown');
+                    const name = mdVar?.name ?? (variableList.some((v) => v?.name === 'content') ? 'content' : '');
+                    if (name)
+                        found = String(name);
+                }
+            }
+            scan(n?.children);
+        }
+    })(tree);
+    return found;
 }
 function cardFromLegacy(id, name, legacy, defaults = {}) {
     const source = (legacy && typeof legacy === 'object' ? legacy : {});
