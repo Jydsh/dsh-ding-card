@@ -122,7 +122,7 @@ function describeSendVariables(card, templateVars = [], customVars = []) {
             role,
             // 成组卡片（按钮 + 旁文本回传区，如 btnsA ↔ btnsAvalue）：true，按钮显示短标签、回传值去前缀；
             // 非成组卡片（只有按钮、无旁文本，如 option1..N / 审批同意取消）：false，按钮文案 = 回传值 = 完整文案。
-            paired: role === 'option' ? optionValueVars.length > 0 : null,
+            paired: role === 'option' ? optionValueVars.length > 0 : false,
             source: templateVars.some((v) => v.name === d.name) ? 'template' : 'custom',
             // 必填标记：常规字段 title/content 必须提供非空内容，其余可选。
             required: d.name === 'title' || d.name === 'content',
