@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
+import { readFileSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 const MAX_TIMEOUT_MS = 24 * 60 * 60 * 1000;
@@ -480,6 +481,7 @@ export class CardConfigStore {
     #config = sanitizeConfig(DEFAULT_CONFIG);
     #loaded = false;
     #writing = Promise.resolve();
+    #mtimeNs = 0n;
     constructor(path = configPath()) {
         this.#path = resolve(path);
     }
@@ -487,7 +489,22 @@ export class CardConfigStore {
         return this.#path;
     }
     get() {
+        this.#syncReloadIfChanged();
         return structuredClone(this.#config);
+    }
+    /** 检测配置文件是否被其他进程/实例修改（mtime 变化），是则同步重载到最新。
+     *  侧边栏保存走同一 store 的 save()（内存已最新），此处 stat 比对后跳过； */
+    #syncReloadIfChanged() {
+        try {
+            const st = statSync(this.#path, { bigint: true });
+            if (st.mtimeNs === this.#mtimeNs)
+                return;
+            const raw = readFileSync(this.#path, 'utf8');
+            this.#config = sanitizeConfig(JSON.parse(raw.replace(/^\uFEFF/, '')));
+            this.#mtimeNs = st.mtimeNs;
+            this.#loaded = true;
+        }
+        catch { /* 文件不可读/不存在时保持现状，不抛错 */ }
     }
     async load() {
         try {
@@ -500,7 +517,17 @@ export class CardConfigStore {
             this.#config = sanitizeConfig(DEFAULT_CONFIG);
         }
         this.#loaded = true;
+        await this.#recordMtime();
         return this.get();
+    }
+    async #recordMtime() {
+        try {
+            const st = await stat(this.#path, { bigint: true });
+            this.#mtimeNs = st.mtimeNs;
+        }
+        catch {
+            this.#mtimeNs = 0n;
+        }
     }
     async save(input) {
         this.#config = sanitizeConfig(input);
@@ -514,6 +541,7 @@ export class CardConfigStore {
             await rename(temp, path);
         });
         await this.#writing;
+        await this.#recordMtime();
         return this.get();
     }
     async patch(partial) {

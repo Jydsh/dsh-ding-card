@@ -205,12 +205,15 @@ export function buildCardData(cardInput: unknown, input: CardSendInput = {}): { 
   const set = (name: unknown, value: unknown) => {
     if (name && value !== undefined && value !== null) params[String(name)] = String(value);
   };
-  set(vars.title, resolvePlaceholders(card.design.title, values) || values.title || '');
-  set(vars.subtitle, resolvePlaceholders(card.design.subtitle, values) || values.subtitle || '');
-  set(vars.content, resolvePlaceholders(card.design.content, values) || values.content || '');
+  // 显式传入的字段值（发送测试/mock、AI 显式传参）优先于设计默认正文；
+  // design.* 仅作兜底模板（含 ${var} 占位符时解析，供 AI 只传 variables 的场景）。
+  const explicit = (value: unknown): boolean => value !== undefined && value !== null && String(value).trim() !== '';
+  set(vars.title, explicit(values.title) ? String(values.title) : (resolvePlaceholders(card.design.title, values) || ''));
+  set(vars.subtitle, explicit(values.subtitle) ? String(values.subtitle) : (resolvePlaceholders(card.design.subtitle, values) || ''));
+  set(vars.content, explicit(values.content) ? String(values.content) : (resolvePlaceholders(card.design.content, values) || ''));
   const designFields = resolvePlaceholders(fieldsText(card.design.fields), values);
-  set(vars.fields, values.fields || designFields);
-  set(vars.state, resolvePlaceholders(card.design.state, values));
+  set(vars.fields, explicit(values.fields) ? String(values.fields) : (designFields || ''));
+  set(vars.state, explicit(values.state) ? String(values.state) : (resolvePlaceholders(card.design.state, values) || ''));
   if (vars.image) set(vars.image, values.image);
   if (values.image && vars.content && !String(params[vars.content] ?? '').includes('![')) {
     params[vars.content] = `${params[vars.content] ?? ''}\n\n![图片](${values.image})`;
