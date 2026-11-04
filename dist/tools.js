@@ -154,7 +154,7 @@ function catalog(cards, config) {
             ...(interactions.approvalCardId === card.id ? ['approval'] : []),
             ...(interactions.ceilingCardId === card.id ? ['ceiling'] : []),
         ],
-        description: card.description ?? null,
+        description: card.description ?? '',
         bound: Boolean(card.templateId),
         variables: describeVariables(card, templateVars),
         // 发送测试弹窗左侧实际显示、可配置的变量（模板声明 ∩ 变量库），含角色与 Mock 示例。
