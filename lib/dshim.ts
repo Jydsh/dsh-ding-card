@@ -1,7 +1,9 @@
 import { createHash } from 'node:crypto';
+import { lstatSync, realpathSync } from 'node:fs';
 import { readFile, readdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { basename, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { PluginConfig } from './store.js';
 
 const PACKAGE_NAME = '@xmanrui/dsh-im';
@@ -17,6 +19,33 @@ export function profileDir(): string {
   if (process.env.DSH_PROFILE_DIR) return resolve(process.env.DSH_PROFILE_DIR);
   const profile = process.env.DSH_PROFILE ?? 'desktop';
   return join(dshHome(), 'profiles', profile);
+}
+
+/** 当前 profile 名称（安装/更新命令与环境识别都按它执行）。 */
+export function currentProfileName(): string {
+  const dir = profileDir();
+  const parts = dir.split(/[\\/]/).filter(Boolean);
+  const name = parts[parts.length - 1];
+  return name || (process.env.DSH_PROFILE ?? 'desktop');
+}
+
+/** 插件包根目录（dist/*.js 的上一级）。 */
+function pluginRoot(): string {
+  return dirname(dirname(fileURLToPath(import.meta.url)));
+}
+
+/**
+ * 插件是否是指向当前源码目录的开发链接（--link / junction）。
+ * 一键更新会替换 profile 里的包；若那是本地开发目录则不自动替换，避免冲掉开发中的代码。
+ */
+export function isLinkedToSource(): boolean {
+  try {
+    const target = join(profileDir(), 'node_modules', 'dsh-ding-card');
+    if (!lstatSync(target).isSymbolicLink()) return false;
+    return realpathSync(target) === realpathSync(pluginRoot());
+  } catch {
+    return false;
+  }
 }
 
 /** 所有已存在的 profile 目录（desktop / web / …）。 */

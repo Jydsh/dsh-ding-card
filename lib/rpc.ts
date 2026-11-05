@@ -10,8 +10,10 @@ import { selectCard } from './cards.js';
 import { CARD_TYPE_META, sanitizeCard } from './store.js';
 import {
   chooseBot,
+  currentProfileName,
   dshHome,
   inspectDshIm,
+  isLinkedToSource,
   parseConversationKey,
   readDingtalkBots,
   readSessionRoutes,
@@ -386,7 +388,7 @@ export function installRpc(ctx: DshCtx, deps: RpcDeps): { install(): void; dispo
     if (!manager || typeof (manager as Record<string, any>).installBundle !== 'function') {
       return {
         manual: true,
-        command: `dsh plugin --profile ${process.env.DSH_PROFILE ?? 'desktop'} add @xmanrui/dsh-im`,
+        command: `dsh plugin --profile ${currentProfileName()} add @xmanrui/dsh-im`,
         message: '当前 DSH 未暴露插件管理服务，请用命令安装 dsh-im。',
       };
     }
@@ -399,7 +401,7 @@ export function installRpc(ctx: DshCtx, deps: RpcDeps): { install(): void; dispo
       events.record('error', `dsh-im 安装失败：${(error as Error)?.message ?? error}`);
       throw Object.assign(new Error(`dsh-im 安装失败：${(error as Error)?.message ?? error}`), {
         code: (error as Record<string, any>)?.code ?? 'install-failed',
-        detail: { command: `dsh plugin --profile ${process.env.DSH_PROFILE ?? 'desktop'} add @xmanrui/dsh-im` },
+        detail: { command: `dsh plugin --profile ${currentProfileName()} add @xmanrui/dsh-im` },
       });
     }
   }
@@ -409,15 +411,79 @@ export function installRpc(ctx: DshCtx, deps: RpcDeps): { install(): void; dispo
     const current = updater?.current ? updater.current() : null;
     const latest = updater?.check ? await updater.check() : null;
     const updateAvailable = Boolean(current && latest && !updater!.isAtLeast(current, latest.version));
+    const profile = currentProfileName();
     return {
       current,
       latest: latest?.version ?? null,
       source: latest?.source ?? null,
       updateAvailable,
+      profile,
       command: updateAvailable
-        ? `dsh plugin --profile ${process.env.DSH_PROFILE ?? 'desktop'} add github:Jydsh/dsh-ding-card#v${latest!.version}`
+        ? `dsh plugin --profile ${profile} add github:Jydsh/dsh-ding-card#v${latest!.version}`
         : null,
     };
+  }
+
+  /**
+   * 一键更新：插件内部自动识别当前 profile，通过宿主的插件管理服务安装最新版本，
+   * 不再要求用户复制命令。宿主未暴露插件管理服务、或当前是本地开发链接时，
+   * 返回 manual 与对应命令。
+   */
+  async function versionUpdate(): Promise<unknown> {
+    const profile = currentProfileName();
+    const current = updater?.current ? updater.current() : null;
+    const latest = updater?.check ? await updater.check() : null;
+    if (!latest?.version) {
+      throw Object.assign(new Error('无法获取最新版本信息，请检查网络后重试。'), { code: 'version-unavailable' });
+    }
+    const command = `dsh plugin --profile ${profile} add github:Jydsh/dsh-ding-card#v${latest.version}`;
+    if (current && updater!.isAtLeast(current, latest.version)) {
+      return { updated: false, message: `当前已是最新版本 v${current}。`, requiresRestart: false };
+    }
+    if (isLinkedToSource()) {
+      return {
+        updated: false,
+        manual: true,
+        linkMode: true,
+        command,
+        message: `当前插件是本地开发链接，插件不会自动替换开发目录。请用 git 更新本地工作树，或手动执行：${command}`,
+        requiresRestart: false,
+      };
+    }
+    const manager = typeof ctx?.get === 'function' ? ctx.get('pluginManager') : undefined;
+    if (!manager || typeof (manager as Record<string, any>).installBundle !== 'function') {
+      return {
+        updated: false,
+        manual: true,
+        command,
+        message: `当前 DSH 未暴露插件管理服务，请在终端执行：${command}`,
+        requiresRestart: false,
+      };
+    }
+    events.record('info', `开始一键更新插件到 v${latest.version}…`);
+    try {
+      const result = await (manager as Record<string, any>).installBundle(
+        `github:Jydsh/dsh-ding-card#v${latest.version}`,
+        { enabled: true },
+      );
+      events.record('info', `插件已更新到 v${latest.version}，重启 DSH 后生效`, {
+        application: (result as Record<string, any>)?.application,
+      });
+      return {
+        updated: true,
+        version: latest.version,
+        profile,
+        requiresRestart: true,
+        message: `已更新到 v${latest.version}，重启 DSH 后生效。`,
+        result,
+      };
+    } catch (error) {
+      events.record('error', `插件更新失败：${(error as Error)?.message ?? error}`);
+      throw Object.assign(new Error(`插件更新失败：${(error as Error)?.message ?? error}`), {
+        code: (error as Record<string, any>)?.code ?? 'update-failed',
+        detail: { command },
+      });
+    }
   }
 
   function sidebarVisibleFor(config: PluginConfig): boolean {
@@ -450,6 +516,7 @@ export function installRpc(ctx: DshCtx, deps: RpcDeps): { install(): void; dispo
     if (method === 'cards.export') return exportCard(payload as Record<string, any>);
     if (method === 'bot.check') return checkBot();
     if (method === 'version.check') return versionCheck();
+    if (method === 'version.update') return versionUpdate();
     if (method === 'dshim.install') return installDshIm();
     if (method === 'pending.list') return { pending: cards.pendingList() };
     if (method === 'sidebar-entry.get') {

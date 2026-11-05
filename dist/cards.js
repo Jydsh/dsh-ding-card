@@ -359,7 +359,26 @@ export function createCardService({ api, store, bridge, events, logger = console
             events.record('warn', `吊顶卡片开启失败：${error?.message ?? error}`, { code: error?.code });
         }
     }
+    // 回调通道未挂接时（dsh-im 连接早于插件加载），发送卡片给出明确提示，
+    // 避免“发了卡、点了按钮却没回传”却看不到原因。60s 内只提示一次。
+    let lastCallbackWarnAt = 0;
+    function warnIfCallbackUnbound() {
+        try {
+            const now = Date.now();
+            if (now - lastCallbackWarnAt < 60_000)
+                return;
+            const stream = bridge?.status?.();
+            if (!stream || !stream.patched || stream.seenClients)
+                return;
+            lastCallbackWarnAt = now;
+            events.record('warn', '回调通道尚未挂接（dsh-im 的钉钉连接早于插件加载），卡片按钮回传可能收不到；重启 DSH 后自动恢复。', {
+                hint: '这与是否发送过卡片无关，回调通道在 dsh-im 建连时建立。',
+            });
+        }
+        catch { /* 状态读取失败不影响发送 */ }
+    }
     async function send({ card, bot, target, sessionId, data, kind = 'card' }) {
+        warnIfCallbackUnbound();
         const built = buildCardData(card, data);
         const options = built.options.map((option, index) => ({
             id: String(index + 1),
