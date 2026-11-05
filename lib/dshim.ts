@@ -19,6 +19,17 @@ export function profileDir(): string {
   return join(dshHome(), 'profiles', profile);
 }
 
+/** 所有已存在的 profile 目录（desktop / web / …）。 */
+export async function listProfileDirs(): Promise<string[]> {
+  const root = join(dshHome(), 'profiles');
+  try {
+    const entries = await readdir(root, { withFileTypes: true });
+    return entries.filter((entry) => entry.isDirectory()).map((entry) => join(root, entry.name));
+  } catch {
+    return [];
+  }
+}
+
 export function botIdFor(clientId: unknown): string | null {
   if (typeof clientId !== 'string' || !clientId) return null;
   return `${BOT_PREFIX}${createHash('sha256').update(clientId).digest('hex').slice(0, 24)}`;
@@ -41,11 +52,14 @@ export interface DshImInfo {
   profileDir: string;
   installCommand: string;
   packageName: string;
+  /** 实际检测到 dsh-im 的 profile 名（当前 profile 未装时可能回退到 desktop 等）。 */
+  resolvedFrom?: string;
+  /** 是否来自当前 profile 之外的回退（如网页环境的 web profile 回退到 desktop）。 */
+  fallback?: boolean;
 }
 
-/** Installed dsh-im bundle and its selected-bundle state in the current profile. */
-export async function inspectDshIm(): Promise<DshImInfo> {
-  const dir = profileDir();
+/** 单个 profile 的 dsh-im 状态。 */
+async function inspectProfile(dir: string): Promise<{ installed: boolean; version: string | null; declared: boolean; selected: boolean }> {
   const manifest = await readJson(join(dir, 'package.json')) as Record<string, any> | null;
   const installedManifest = await readJson(join(dir, 'node_modules', PACKAGE_NAME, 'package.json')) as Record<string, any> | null;
   const bundles = Array.isArray(manifest?.dsh?.profile?.bundles) ? manifest.dsh.profile.bundles : [];
@@ -55,10 +69,37 @@ export async function inspectDshIm(): Promise<DshImInfo> {
     version: typeof installedManifest?.version === 'string' ? installedManifest.version : null,
     declared: dependency !== undefined || bundles.includes(PACKAGE_NAME),
     selected: bundles.includes(PACKAGE_NAME),
-    profileDir: dir,
+  };
+}
+
+/**
+ * Installed dsh-im bundle and its selected-bundle state.
+ *
+ * Checks the current profile first (desktop / web / …). When the current
+ * profile has not installed dsh-im — the common case for a web deployment
+ * whose profile only carries the web bundle — scan every other profile and
+ * reuse the one that does have dsh-im, so the web environment still resolves
+ * its bots / routes (those live under DSH_HOME, not per profile).
+ */
+export async function inspectDshIm(): Promise<DshImInfo> {
+  const currentDir = profileDir();
+  const current = await inspectProfile(currentDir);
+  const base = {
+    profileDir: currentDir,
     installCommand: `dsh plugin --profile ${process.env.DSH_PROFILE ?? 'desktop'} add ${PACKAGE_NAME}`,
     packageName: PACKAGE_NAME,
   };
+  if (current.installed) {
+    return { ...base, ...current, resolvedFrom: basename(currentDir) };
+  }
+  for (const dir of await listProfileDirs()) {
+    if (resolve(dir) === resolve(currentDir)) continue;
+    const found = await inspectProfile(dir);
+    if (found.installed) {
+      return { ...base, ...found, profileDir: dir, resolvedFrom: basename(dir), fallback: true };
+    }
+  }
+  return { ...base, ...current, resolvedFrom: basename(currentDir) };
 }
 
 /** dsh-im 存储的钉钉机器人（不解析密钥）。 */

@@ -126,7 +126,8 @@ export async function apply(ctx: DshContext, config: ApplyConfig = {}): Promise<
     });
   } else {
     const bots = await readDingtalkBots().catch(() => []);
-    events.record('info', `已检测到 dsh-im ${dshim.version ?? ''}`.trim(), {
+    const from = dshim.fallback && dshim.resolvedFrom ? `（来自 profile: ${dshim.resolvedFrom}）` : '';
+    events.record('info', `已检测到 dsh-im ${dshim.version ?? ''}${from}`.trim(), {
       bots: bots.length,
       callbackPatched: bridge.patched(),
     });

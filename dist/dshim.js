@@ -14,6 +14,17 @@ export function profileDir() {
     const profile = process.env.DSH_PROFILE ?? 'desktop';
     return join(dshHome(), 'profiles', profile);
 }
+/** 所有已存在的 profile 目录（desktop / web / …）。 */
+export async function listProfileDirs() {
+    const root = join(dshHome(), 'profiles');
+    try {
+        const entries = await readdir(root, { withFileTypes: true });
+        return entries.filter((entry) => entry.isDirectory()).map((entry) => join(root, entry.name));
+    }
+    catch {
+        return [];
+    }
+}
 export function botIdFor(clientId) {
     if (typeof clientId !== 'string' || !clientId)
         return null;
@@ -27,9 +38,8 @@ async function readJson(path) {
         return null;
     }
 }
-/** Installed dsh-im bundle and its selected-bundle state in the current profile. */
-export async function inspectDshIm() {
-    const dir = profileDir();
+/** 单个 profile 的 dsh-im 状态。 */
+async function inspectProfile(dir) {
     const manifest = await readJson(join(dir, 'package.json'));
     const installedManifest = await readJson(join(dir, 'node_modules', PACKAGE_NAME, 'package.json'));
     const bundles = Array.isArray(manifest?.dsh?.profile?.bundles) ? manifest.dsh.profile.bundles : [];
@@ -39,10 +49,37 @@ export async function inspectDshIm() {
         version: typeof installedManifest?.version === 'string' ? installedManifest.version : null,
         declared: dependency !== undefined || bundles.includes(PACKAGE_NAME),
         selected: bundles.includes(PACKAGE_NAME),
-        profileDir: dir,
+    };
+}
+/**
+ * Installed dsh-im bundle and its selected-bundle state.
+ *
+ * Checks the current profile first (desktop / web / …). When the current
+ * profile has not installed dsh-im — the common case for a web deployment
+ * whose profile only carries the web bundle — scan every other profile and
+ * reuse the one that does have dsh-im, so the web environment still resolves
+ * its bots / routes (those live under DSH_HOME, not per profile).
+ */
+export async function inspectDshIm() {
+    const currentDir = profileDir();
+    const current = await inspectProfile(currentDir);
+    const base = {
+        profileDir: currentDir,
         installCommand: `dsh plugin --profile ${process.env.DSH_PROFILE ?? 'desktop'} add ${PACKAGE_NAME}`,
         packageName: PACKAGE_NAME,
     };
+    if (current.installed) {
+        return { ...base, ...current, resolvedFrom: basename(currentDir) };
+    }
+    for (const dir of await listProfileDirs()) {
+        if (resolve(dir) === resolve(currentDir))
+            continue;
+        const found = await inspectProfile(dir);
+        if (found.installed) {
+            return { ...base, ...found, profileDir: dir, resolvedFrom: basename(dir), fallback: true };
+        }
+    }
+    return { ...base, ...current, resolvedFrom: basename(currentDir) };
 }
 /** DingTalk bots stored by dsh-im, without resolving their secrets. */
 export async function readDingtalkBots() {
