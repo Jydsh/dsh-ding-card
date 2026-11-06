@@ -3,7 +3,14 @@ import { readFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import type { CardConfig, CardType, PluginConfig } from './store.js';
-import type { LatestVersionInfo } from './updater.js';
+import {
+  detectInstallEnv,
+  runUpdate,
+  type InstallEnv,
+  type LatestVersionInfo,
+  type UpdateResult,
+  type UpdateTargetOptions,
+} from './updater.js';
 
 import { buildCardData, exportDingtalkTemplate, sampleData } from './export.js';
 import { importDingtalkJson } from './import.js';
@@ -100,6 +107,10 @@ export interface RpcDeps {
     current(): string | null;
     check(): Promise<LatestVersionInfo | null>;
     isAtLeast(current: string | null, latest: string): boolean;
+    /** 可选：环境识别（缺省用内置实现；测试可注入固定结果） */
+    detectInstallEnv?(options: UpdateTargetOptions): InstallEnv;
+    /** 可选：执行安装命令（缺省用内置实现；测试可注入桩，避免真跑 pnpm） */
+    runUpdate?(options: UpdateTargetOptions): Promise<UpdateResult>;
   };
 }
 
@@ -433,22 +444,35 @@ export function installRpc(ctx: DshCtx, deps: RpcDeps): { install(): void; dispo
     return table[code] ?? '';
   }
 
-  /** 版本检查：对比当前插件版本与 GitHub 最新 Release，返回更新引导命令。 */
+  /** 环境识别：优先用宿主装配的实现（测试可注入），否则用内置实现。 */
+  function resolveInstallEnv(options: UpdateTargetOptions): InstallEnv {
+    const custom = updater?.detectInstallEnv;
+    return custom ? custom(options) : detectInstallEnv(options);
+  }
+
+  /** 执行安装命令：同上，测试可注入桩避免真跑安装器。 */
+  function execUpdate(options: UpdateTargetOptions): Promise<UpdateResult> {
+    const custom = updater?.runUpdate;
+    return custom ? custom(options) : runUpdate(options);
+  }
+
+  /** 版本检查：对比当前插件版本与 GitHub 最新 Release，并返回本机安装环境识别结果。 */
   async function versionCheck(): Promise<unknown> {
     const current = updater?.current ? updater.current() : null;
     const latest = updater?.check ? await updater.check() : null;
     const updateAvailable = Boolean(current && latest && !updater!.isAtLeast(current, latest.version));
-    const profile = currentProfileName();
-    const command = updateAvailable
-      ? `dsh plugin --profile ${profile} add github:Jydsh/dsh-ding-card#v${latest!.version}`
-      : null;
+    // 与「立即更新 / 复制命令」共用同一套环境判定，界面显示的 profile 与命令就是实际执行的
+    const env = resolveInstallEnv({ version: latest?.version ?? undefined });
+    const profile = env.profile ?? currentProfileName();
     return {
       current,
       latest: latest?.version ?? null,
       source: latest?.source ?? null,
       updateAvailable,
       profile,
-      command,
+      command: updateAvailable ? (env.command || null) : null,
+      /** 安装环境（profile / 安装来源 / CLI / 是否可自动执行）；无更新时为 null */
+      env: updateAvailable ? env : null,
       /** 能否热更新（免重启）：宿主未提供 hmr 时为 false，覆盖更新后必须重启。 */
       hotReload: hmrAvailable(),
       /** 当前环境是本地开发链接（junction / --link）时，更新由工作树决定。 */
@@ -501,91 +525,144 @@ export function installRpc(ctx: DshCtx, deps: RpcDeps): { install(): void; dispo
    * - 宿主无 HMR 时：覆盖更新后宿主标记 restart-required，必须重启 DSH 才生效；
    * - 首次安装：宿主会 publishAndReload，装完即生效。
    */
-  async function versionUpdate(): Promise<unknown> {
-    const profile = currentProfileName();
+  async function versionUpdate(payload?: Record<string, any>): Promise<unknown> {
     const current = updater?.current ? updater.current() : null;
     const latest = updater?.check ? await updater.check() : null;
     if (!latest?.version) {
       throw Object.assign(new Error('无法获取最新版本信息，请检查网络后重试。'), { code: 'version-unavailable' });
     }
-    const spec = `github:Jydsh/dsh-ding-card#v${latest.version}`;
-    const command = `dsh plugin --profile ${profile} add ${spec}`;
+    const requested = typeof payload?.profile === 'string' ? payload.profile.trim() : '';
+    // 命令与 profile 出自同一套环境判定：界面展示的、复制命令复制的、兜底执行的都是这一条
+    const env = resolveInstallEnv({ version: latest.version, profile: requested || undefined });
+    const profile = env.profile ?? currentProfileName();
+    const command = env.command || `dsh plugin --profile ${profile} add github:Jydsh/dsh-ding-card#v${latest.version}`;
     if (current && updater!.isAtLeast(current, latest.version)) {
-      return { updated: false, profile, message: `当前已是最新版本 v${current}。`, requiresRestart: false };
+      return { ok: true, updated: false, profile, command, env, message: `当前已是最新版本 v${current}。`, requiresRestart: false };
     }
-    if (isLinkedToSource()) {
+    if (env.blocker) {
+      // 链接安装 / 找不到 CLI / 无法判定 profile：不自动安装，把原因与命令交给界面
+      events.record('warn', `无法自动更新（${profile}）：${env.blocker}`);
       return {
+        ok: false,
         updated: false,
         manual: true,
-        linkMode: true,
+        linkMode: env.source === 'link',
         command,
         profile,
-        message: `当前插件是本地开发链接（${profile} profile），插件不会替换开发目录。请更新工作树后重启 DSH，或手动执行：${command}`,
+        env,
+        output: env.blocker,
+        message: env.blocker,
         requiresRestart: false,
       };
     }
     const manager = typeof ctx?.get === 'function' ? ctx.get('pluginManager') : undefined;
     if (!manager || typeof (manager as Record<string, any>).installBundle !== 'function') {
+      // 宿主没暴露插件管理服务：按识别出的同一套命令直接执行，与「复制命令」内容完全一致
+      events.record('info', `宿主未暴露插件管理服务，改为执行命令行：${command}`);
+      const outcome = await execUpdate({ version: latest.version, profile: requested || undefined });
+      const tailText = outcome.output.trim().split(/\r?\n/).slice(-3).join(' / ');
+      events.record(
+        outcome.ok ? 'info' : 'error',
+        outcome.ok
+          ? `命令行更新完成（exit ${outcome.exitCode}）：${command}`
+          : `命令行更新失败（exit ${outcome.exitCode}）：${tailText || '无输出'}`,
+      );
+      const hint = outcome.ok ? restartHint(profile) : null;
       return {
-        updated: false,
-        manual: true,
-        command,
+        ok: outcome.ok,
+        updated: outcome.ok,
+        applied: false,
+        manual: !outcome.ok,
+        requiresRestart: outcome.ok,
+        version: latest.version,
         profile,
-        message: `当前 DSH 未暴露插件管理服务，请在终端执行：${command}`,
-        requiresRestart: false,
+        command,
+        env: outcome.env,
+        output: outcome.output,
+        exitCode: outcome.exitCode,
+        restart: hint,
+        message: outcome.ok
+          ? `已执行安装命令并通过，重启 DSH 后生效。${hint?.message ?? ''}`
+          : `更新失败（exit ${outcome.exitCode ?? '未知'}）：${tailText || '命令没有输出'}`,
       };
     }
     if (hmrAvailable()) {
-      queueHotReload(manager as Record<string, any>, spec);
-      events.record('info', `热更新模式：排队卸载并立即重装 ${spec}，宿主将热重组插件`);
+      queueHotReload(manager as Record<string, any>, env.spec);
+      events.record('info', `热更新模式：排队卸载并立即重装 ${env.spec}，宿主将热重组插件`);
       return {
+        ok: true,
         updated: false,
         hotReload: true,
         queued: true,
         version: latest.version,
         profile,
+        command,
+        env,
         requiresRestart: false,
         message: `热更新模式：正在卸载并立即重装 v${latest.version}，插件会短暂断开，宿主热重组后自动恢复。`,
       };
     }
     events.record('info', `开始一键更新插件到 v${latest.version}…`);
+    let result: Record<string, any>;
     try {
-      const result = await (manager as Record<string, any>).installBundle(spec, { enabled: true }) as Record<string, any>;
-      const application = String(result?.application ?? 'restart-required');
-      if (application === 'failed') {
-        const reason = updateFailureText(result?.error) || '宿主未返回具体原因。';
-        events.record('error', `插件更新失败：${reason}`);
-        throw Object.assign(new Error(`插件更新失败：${reason}`), { code: 'update-failed', detail: { command, result } });
-      }
-      const applied = application === 'applied';
-      const hint = applied ? null : restartHint(profile);
-      events.record(
-        'info',
-        applied
-          ? `插件已更新到 v${latest.version}，宿主已应用，无需重启`
-          : `插件已更新到 v${latest.version}，需重启 DSH 生效`,
-        { application },
-      );
-      return {
-        updated: true,
-        applied,
-        requiresRestart: !applied,
-        version: latest.version,
-        profile,
-        restart: hint,
-        message: applied
-          ? `已更新到 v${latest.version}，无需重启即已生效。`
-          : `已更新到 v${latest.version}，重启 DSH 后生效。${hint?.message ?? ''}`,
-        result,
-      };
+      result = await (manager as Record<string, any>).installBundle(env.spec, { enabled: true }) as Record<string, any>;
     } catch (error) {
       const reason = updateFailureText(error as Record<string, any>) || ((error as Error)?.message ?? String(error));
       events.record('error', `插件更新失败：${reason}`);
-      throw Object.assign(new Error(`插件更新失败：${reason}`), {
+      return {
+        ok: false,
+        updated: false,
+        manual: true,
+        command,
+        profile,
+        env,
+        output: reason,
+        message: `更新失败：${reason}`,
+        requiresRestart: false,
         code: (error as Record<string, any>)?.code ?? 'update-failed',
-        detail: { command },
-      });
+      };
     }
+    const application = String(result?.application ?? 'restart-required');
+    if (application === 'failed') {
+      const reason = updateFailureText(result?.error) || '宿主未返回具体原因。';
+      events.record('error', `插件更新失败：${reason}`);
+      return {
+        ok: false,
+        updated: false,
+        manual: true,
+        command,
+        profile,
+        env,
+        output: reason,
+        message: `更新失败：${reason}`,
+        requiresRestart: false,
+        code: 'update-failed',
+      };
+    }
+    const applied = application === 'applied';
+    const hint = applied ? null : restartHint(profile);
+    events.record(
+      'info',
+      applied
+        ? `插件已更新到 v${latest.version}，宿主已应用，无需重启`
+        : `插件已更新到 v${latest.version}，需重启 DSH 生效`,
+      { application },
+    );
+    return {
+      ok: true,
+      updated: true,
+      applied,
+      requiresRestart: !applied,
+      version: latest.version,
+      profile,
+      command,
+      env,
+      restart: hint,
+      message: applied
+        ? `已更新到 v${latest.version}，无需重启即已生效。`
+        : `已更新到 v${latest.version}，重启 DSH 后生效。${hint?.message ?? ''}`,
+      result,
+    };
   }
 
   /**
@@ -646,7 +723,7 @@ export function installRpc(ctx: DshCtx, deps: RpcDeps): { install(): void; dispo
     if (method === 'cards.export') return exportCard(payload as Record<string, any>);
     if (method === 'bot.check') return checkBot();
     if (method === 'version.check') return versionCheck();
-    if (method === 'version.update') return versionUpdate();
+    if (method === 'version.update') return versionUpdate(payload as Record<string, any> | undefined);
     if (method === 'version.restart') return versionRestart();
     if (method === 'dshim.install') return installDshIm();
     if (method === 'pending.list') return { pending: cards.pendingList() };
