@@ -96,7 +96,7 @@ test('bridge patches connect so a client is attached even without a card-topic r
   try { await client.disconnect?.(); } catch { /* ignore */ }
 });
 
-test('status reports hookPending while patched but no client observed', async (t) => {
+test('status keeps hookPending false after patching even without an observed client', async (t) => {
   if (!profileDir) {
     t.skip('未找到 DSH profile，无法加载真实 dingtalk-stream');
     return;
@@ -109,7 +109,8 @@ test('status reports hookPending while patched but no client observed', async (t
     const status = bridge.status();
     assert.equal(status.patched, true);
     assert.equal(status.seenClients, 0);
-    assert.equal(status.hookPending, true);
+    // 钩子挂在 DWClient.prototype.onCallback 上，patch 完成即能收回调，不再依赖实例。
+    assert.equal(status.hookPending, false);
   } finally {
     for (const [client, meta] of saved) streamState.clients.set(client, meta);
   }

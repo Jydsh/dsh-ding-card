@@ -1,6 +1,6 @@
 # dsh-ding-card
 
-> 钉钉 AI 卡片交互插件 · 正式版本 v2026.11.05（版本号采用年月日管理）
+> 钉钉 AI 卡片交互插件 · 正式版本 v2026.11.06（版本号采用年月日管理）
 
 把 DeepSeek Harness（DSH）的人机交互变成**钉钉互动卡片**：当 Agent 需要提问、审批或展示结构化信息时，插件自动投放一张带推荐选项的卡片；用户点击按钮后，答案直接回到正在流式运行的会话里。Web 界面与钉钉卡片同时可用，先答者生效。
 
@@ -27,16 +27,60 @@
 - **提问卡片**：`ask_user_question` 自动转为带选项的钉钉卡片。
 - **审批卡片**：工具调用需要确认时自动转为「允许 / 拒绝」按钮。
 - **吊顶卡片**：固定会话顶部的音乐播放器等卡片（仅单聊，一张回复最多一张）。
-- **回调通道自动挂接**：在 dsh-im 建连时（`connect`）与注册回调时双点挂接，插件晚于回调注册加载也能补挂；插件启动 15 秒后自检，未挂接时写入明确提示（重启 DSH 即自动恢复，与是否发送过卡片无关）。
+- **回调通道自动挂接（免重启）**：钩子直接挂在钉钉 SDK 的 `DWClient.prototype.onCallback` 分发点上，不需要持有 dsh-im 的 client 实例——先装本插件再装 dsh-im、先装 dsh-im 再装本插件，两种情况都能收到回调；还看不到 `dingtalk-stream` 时后台每 10 秒自动重试挂接（约 5 分钟后降频到 60 秒一次），装好后自动生效，**无需重启 DSH**。
 - **回调持久化**：DSH 重启后，重启前的消息卡片回调仍可回收与记录。
 - **回调日志**：记录每个按钮点击的回传值详情。
 - **AI 流式填充**：AI 卡片逐 key 流式渲染，失败自动重试并落盘 `stream_failures.json` 明细。
 
 ### 版本检查与更新
 - 插件启动时自动检查 GitHub Release 最新版本（`api.github.com` 优先，失败回退 `releases.atom`）。
-- 侧边栏标题旁显示当前版本：`v2026.11.05`；发现新版本时变醒目色并显示 `v2026.11.05 ↑ v2026.11.06`。
-- **一键更新**：点击版本号或横幅按钮即可更新，插件按当前 profile（desktop / web）自动安装，无需复制命令；安装完成后重启 DSH 生效。
+- 侧边栏标题旁显示当前版本：`v2026.11.06`；发现新版本时变醒目色并显示 `v2026.11.06 ↑ v2026.11.07`。
+- **一键更新**：点击版本号或横幅按钮即可更新，插件按当前 profile（desktop / web）自动**覆盖安装**，不需要卸载，也不需要复制命令。
 - **首次自动更新**：启动时识别到新版本会自动安装一次（同一版本只尝试一次）；若当前是本地开发链接（`--link` / junction）则跳过自动替换并提示。
+- **更新后重启**：宿主没有热更新（HMR）时，覆盖安装后必须重启 DSH 才会换掉运行中的旧代码；界面会提示并给出「立即重启 DSH」按钮（桌面端由插件调 `app.relaunch` 自我重启，网页端给出重启方式）。
+
+### 更新（覆盖安装，不需要卸载）
+
+更新就是**往同一个包里装新版本**，底层执行 `pnpm add <spec>`，对已存在的同名依赖是覆盖升级。DSH 原生「插件」页对第三方插件只提供卸载，所以请在下面三种方式里选一种：
+
+```bash
+# 1) 命令行覆盖更新（不需要先 remove；DSH 运行中请先退出）
+dsh plugin --profile desktop add github:Jydsh/dsh-ding-card#v2026.11.06
+# 2) semver 范围内的常规升级（package.json 里是 ^x.y.z 时有效）
+dsh plugin --profile desktop update dsh-ding-card
+```
+
+| 方式 | 是否需要卸载 | 生效时机 |
+| --- | --- | --- |
+| 概览页「一键更新」/ 版本号 | 否 | 宿主有 HMR：热重组，无需重启；无 HMR：重启 DSH 生效（界面给一键重启按钮） |
+| 启动自动更新（发现新版本） | 否 | 同上；同一版本只自动尝试一次 |
+| 命令行 `add` / `update` | 否 | 重启 DSH 生效 |
+
+**为什么有的环境更新后必须重启**：DSH 宿主对“已装包的覆盖安装”会跳过插件重载（`installBundle` 内部 `Object.hasOwn(before, name)` 分支），只把结果标记为 `restart-required`；只有**首次安装**才会 `publishAndReload` 立即生效。插件无法绕过这个判定，所以改用「更新完成后由用户确认、一键重启」。
+
+**热更新（免重启）的前提**：宿主的 `@deepseek-ai/dsh-base` bundle 默认装配 `hmr` 服务（`@deepseek-ai/dsh-hmr`）。检测到 `hmr` 可用时，插件把更新改为「先卸载、立即重装」，宿主热重组后**无需重启**；`hmr` 不可用（或宿主拒绝对已装包覆盖）时才提示重启。概览页的更新横幅会按当前情况显示对应文案。
+
+**常见失败原因**（插件会把宿主的错误码翻成中文显示）：
+
+| 错误码 | 含义 | 处理 |
+| --- | --- | --- |
+| `already-installed` | 当前 DSH 处于热更新模式，不允许对已装包直接覆盖 | 插件会自动改走「卸载后立即重装」，宿主热重组，无需重启 |
+| `incompatible-version` | 新版本与当前 DSH 版本不兼容 | 保持原版本，等待匹配的 DSH 版本 |
+| `ambiguous-install` | 安装结果无法定位唯一包 | 宿主已回滚 `package.json`，重试或换命令行 |
+| `not-bundle` | 包没有声明 `dsh.bundle` | 确认安装的是插件包本身，不是源码仓库的其他产物 |
+| `network` / `timeout` | GitHub 不通 | 检查网络/代理后重试（`gh`、`api.github.com` 是否可达） |
+| `stop-profile` | 该 profile 正被 DSH 独占 | 退出 DSH 后在命令行执行 |
+
+
+### 多环境隔离（桌面端 + 网页端）
+同一台电脑同时装 DSH 桌面端（`desktop` profile）与网页端（`dsh web`，即 `web` profile）时，插件按**自己的安装位置**判断当前环境，不做跨环境借用：
+
+- **环境识别**：从 `.../profiles/<name>/node_modules/dsh-ding-card` 推断当前 profile；`DSH_PROFILE_DIR` / `DSH_PROFILE` 存在时以宿主声明为准。概览页标题旁显示环境徽标（`desktop` / `web`）。
+- **检测隔离**：只检查当前 profile 的 dsh-im，未装即显示「未安装」并给出**当前环境**的安装命令（如 `dsh plugin --profile web add @xmanrui/dsh-im`），不再回退到 desktop 的副本。
+- **依赖隔离**：`dingtalk-stream` 只从当前 profile 解析，不借用其他 profile；当前环境未装 dsh-im 时卡片不可用，需在该 profile 各自安装。
+- **数据隔离**：卡片库、模板、变量集、回调日志、昵称表、更新状态都落在 `~/.dsh/integrations/dsh-ding-card/profiles/<name>/`，两个环境互不影响；首次启动时会把旧的 DSH_HOME 级 `config.json` 复制一份到当前环境（旧文件保留）。
+- **机器人配置引用**：机器人凭据与会话路由来自 dsh-im；当前 profile 未装 dsh-im 时不引用，避免出现「左边未安装、右边凭据就绪」的矛盾显示。
+
 
 ### AI 自主使用（Agent 工具）
 插件向 Agent 提供三个工具，使其能**自己判断用哪张卡、怎么传参**：
@@ -82,7 +126,7 @@ dsh plugin --profile <profile> add github:Jydsh/dsh-ding-card
 指定版本安装（配合 GitHub Release tag）：
 
 ```bash
-dsh plugin --profile desktop add github:Jydsh/dsh-ding-card#v2026.11.05
+dsh plugin --profile desktop add github:Jydsh/dsh-ding-card#v2026.11.06
 ```
 
 > **关于 `<profile>` 环境名**：

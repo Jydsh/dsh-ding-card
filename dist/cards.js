@@ -1,14 +1,14 @@
 import { randomUUID } from 'node:crypto';
 import { writeFileSync, readFileSync, mkdirSync, appendFileSync } from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { buildCardData, sampleData } from './export.js';
+import { profileDataDir } from './dshim.js';
 const CLOSED_STATE = '已完成';
 const TIMEOUT_STATE = '已超时';
 const CANCELLED_STATE = '已取消';
 const MAX_CONTENT = 2_800;
 /** 发送测试卡的回调上下文持久化文件：DSH 重启后仍能处理重启前发送的测试卡片。 */
-const CALLBACK_TRACKS_PATH = path.join(os.homedir(), '.dsh', 'integrations', 'dsh-ding-card', 'callback_tracks.json');
+const CALLBACK_TRACKS_PATH = path.join(profileDataDir(), 'callback_tracks.json');
 const TRACKS_MAX = 200;
 const TRACKS_TTL_MS = 7 * 24 * 3600 * 1000;
 function loadTracks() {
@@ -30,14 +30,14 @@ function saveTracks(map) {
 }
 function writeDebug(obj) {
     try {
-        const dir = path.join(os.homedir(), '.dsh', 'integrations', 'dsh-ding-card');
+        const dir = profileDataDir();
         mkdirSync(dir, { recursive: true });
         appendFileSync(path.join(dir, 'debug_recall.json'), `${JSON.stringify(obj)}\n`, 'utf8');
     }
     catch { }
 }
 /** 流式填充失败明细落盘（JSONL）：用户/开发者可直接在插件目录自查失败变量、错误码与内容长度。 */
-const STREAM_FAILURES_PATH = path.join(os.homedir(), '.dsh', 'integrations', 'dsh-ding-card', 'stream_failures.json');
+const STREAM_FAILURES_PATH = path.join(profileDataDir(), 'stream_failures.json');
 function writeStreamFailure(record) {
     try {
         mkdirSync(path.dirname(STREAM_FAILURES_PATH), { recursive: true });
@@ -359,8 +359,9 @@ export function createCardService({ api, store, bridge, events, logger = console
             events.record('warn', `吊顶卡片开启失败：${error?.message ?? error}`, { code: error?.code });
         }
     }
-    // 回调通道未挂接时（dsh-im 连接早于插件加载），发送卡片给出明确提示，
+    // 回调通道未挂接时（当前环境还看不到 dingtalk-stream），发送卡片给出明确提示，
     // 避免“发了卡、点了按钮却没回传”却看不到原因。60s 内只提示一次。
+    // 注意：钩子挂在 SDK 的分发点上，patch 完成即能收回调，不依赖 client 实例是否已被观察到。
     let lastCallbackWarnAt = 0;
     function warnIfCallbackUnbound() {
         try {
@@ -368,11 +369,11 @@ export function createCardService({ api, store, bridge, events, logger = console
             if (now - lastCallbackWarnAt < 60_000)
                 return;
             const stream = bridge?.status?.();
-            if (!stream || !stream.patched || stream.seenClients)
+            if (!stream || stream.patched)
                 return;
             lastCallbackWarnAt = now;
-            events.record('warn', '回调通道尚未挂接（dsh-im 的钉钉连接早于插件加载），卡片按钮回传可能收不到；重启 DSH 后自动恢复。', {
-                hint: '这与是否发送过卡片无关，回调通道在 dsh-im 建连时建立。',
+            events.record('warn', '回调通道还没挂接（当前环境看不到 dingtalk-stream），卡片按钮回传可能收不到；插件会在后台自动重试挂接，装好后无需重启 DSH。', {
+                hint: '与是否发送过卡片无关；挂接成功后会立即生效。',
             });
         }
         catch { /* 状态读取失败不影响发送 */ }

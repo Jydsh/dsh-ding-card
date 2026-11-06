@@ -2,7 +2,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { createCardService } from './cards.js';
 import { createDingTalkApi } from './dingtalk.js';
-import { currentProfileName, dshHome, inspectDshIm, isLinkedToSource, readDingtalkBots } from './dshim.js';
+import { currentProfileName, inspectDshIm, isLinkedToSource, profileDataDir, readDingtalkBots } from './dshim.js';
 import { installInteractions } from './interactions.js';
 import { createEventLog } from './log.js';
 import { createRouteResolver } from './routing.js';
@@ -17,7 +17,7 @@ export const inject = ['connection', 'credentials'];
 
 /** 自动更新尝试记录（同一版本只自动尝试一次，失败留给用户一键更新重试）。 */
 function autoUpdateStatePath(): string {
-  return join(dshHome(), 'integrations', 'dsh-ding-card', 'update_state.json');
+  return join(profileDataDir(), 'update_state.json');
 }
 
 async function readAutoUpdateVersion(): Promise<string | null> {
@@ -126,7 +126,15 @@ export async function apply(ctx: DshContext, config: ApplyConfig = {}): Promise<
       if (!manager || typeof manager.installBundle !== 'function') {
         logger.info?.(
           `[dsh-ding-card] 发现新版本 ${current} → ${latest.version}；宿主未提供插件管理服务，`
-          + `可执行 dsh plugin --profile ${profile} add github:Jydsh/dsh-ding-card#v${latest.version} 更新。`,
+          + `可执行 dsh plugin --profile ${profile} add github:Jydsh/dsh-ding-card#v${latest.version} 更新（覆盖安装，无需先卸载）。`,
+        );
+        return;
+      }
+      // 热更新模式下宿主拒绝对已装包直接覆盖，且自动卸载会打断启动流程：留给侧边栏的一键更新。
+      if (typeof (ctx as Record<string, any>).get === 'function' && (ctx as Record<string, any>).get('hmr')) {
+        logger.info?.(
+          `[dsh-ding-card] 发现新版本 ${current} → ${latest.version}；当前为热更新模式，`
+          + '请在侧边栏点击版本号一键更新（会先卸载再重装，由宿主热重组，无需重启）。',
         );
         return;
       }
@@ -137,9 +145,15 @@ export async function apply(ctx: DshContext, config: ApplyConfig = {}): Promise<
         return;
       }
       await writeAutoUpdateVersion(latest.version);
-      await manager.installBundle(`github:Jydsh/dsh-ding-card#v${latest.version}`, { enabled: true });
-      events.record('info', `已自动更新到 v${latest.version}，重启 DSH 后生效`);
-      logger.info?.(`[dsh-ding-card] 已自动更新到 v${latest.version}，重启 DSH 后生效。`);
+      const applied = await manager.installBundle(`github:Jydsh/dsh-ding-card#v${latest.version}`, { enabled: true });
+      const application = String((applied as Record<string, any>)?.application ?? 'restart-required');
+      if (application === 'applied') {
+        events.record('info', `已自动更新到 v${latest.version}（宿主已热应用，无需重启）`);
+        logger.info?.(`[dsh-ding-card] 已自动更新到 v${latest.version}，无需重启即已生效。`);
+      } else {
+        events.record('info', `已自动更新到 v${latest.version}，需重启 DSH 生效`);
+        logger.info?.(`[dsh-ding-card] 已自动更新到 v${latest.version}，重启 DSH 后生效。`);
+      }
     } catch { /* 版本检查/自动更新失败不影响启动 */ }
   })();
 
@@ -174,30 +188,29 @@ export async function apply(ctx: DshContext, config: ApplyConfig = {}): Promise<
 
   const dshim = await inspectDshIm();
   if (!dshim.installed) {
-    events.record('warn', '未检测到 dsh-im，卡片无法投递；请先安装 dsh-im 并接入钉钉机器人。', {
+    events.record('warn', `当前环境（${dshim.profile} profile）未检测到 dsh-im，卡片无法投递；请先在该 profile 安装 dsh-im 并接入钉钉机器人。`, {
       installCommand: dshim.installCommand,
     });
   } else {
     const bots = await readDingtalkBots().catch(() => []);
-    const from = dshim.fallback && dshim.resolvedFrom ? `（来自 profile: ${dshim.resolvedFrom}）` : '';
-    events.record('info', `已检测到 dsh-im ${dshim.version ?? ''}${from}`.trim(), {
+    events.record('info', `已检测到 dsh-im ${dshim.version ?? ''}（${dshim.profile} profile）`.trim(), {
       bots: bots.length,
       callbackPatched: bridge.patched(),
     });
     if (bots.length === 0) events.record('warn', 'dsh-im 已安装，但还没有配置钉钉机器人。');
     if (!bridge.patched()) {
-      events.record('warn', '未能挂接 dsh-im 的钉钉 Stream 回调，请重启 DSH 后再试。');
+      events.record('warn', '尚未挂接钉钉 Stream 回调：当前环境还看不到 dingtalk-stream。装好 dsh-im 后插件会自动重试挂接，无需重启 DSH。');
     } else {
-      // 回调通道自检：插件若晚于 dsh-im 建连加载，旧连接实例不可达、无法补挂。
-      // 这里明确告知“重启 DSH 即可自动恢复”，并说明与是否发过卡片无关。
+      // 回调通道自检：钩子挂在 SDK 的 CALLBACK 分发点（DWClient.prototype.onCallback），
+      // 因此 dsh-im 的连接即使先于插件建立也能收到后续回调，不必重启。
       const timer = setTimeout(() => {
         try {
           const stream = bridge.status();
           if (!stream?.seenClients) {
-            const message = '回调通道未挂接：dsh-im 的钉钉连接在插件加载前已建立（旧连接实例不可达）。'
-              + '重启 DSH 后插件会先挂接再建连，回调自动恢复；这与是否发送过卡片无关。';
-            events.record('warn', message);
-            logger.warn?.(`[dsh-ding-card] ${message}`);
+            const message = '回调通道已挂在钉钉 SDK 的分发点，还没有收到过回调；'
+              + '发一张测试卡片并点击按钮即可确认通道可用（无需重启 DSH）。';
+            events.record('info', message);
+            logger.info?.(`[dsh-ding-card] ${message}`);
           } else {
             events.record('info', `回调通道已挂接（${stream.clients?.length ?? 0} 个连接就绪）`);
           }

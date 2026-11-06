@@ -1,10 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
-import { CardConfigStore, sanitizeCustomVariables, sanitizeCard, sanitizeTemplateVariables } from '../dist/store.js';
+import { CardConfigStore, configPath, sanitizeCustomVariables, sanitizeCard, sanitizeTemplateVariables } from '../dist/store.js';
 
 test('legacy config without templateVariables falls back to default template variables', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'dsh-ding-card-'));
@@ -215,4 +215,34 @@ test('sanitizeTemplateVariables rejects malformed input', () => {
   assert.deepEqual(sanitizeTemplateVariables([{ name: 'ok', type: 'boolean', desc: '开关' }]), [
     { name: 'ok', type: 'boolean', desc: '开关', note: '', bindVar: '', mock: undefined, createdAt: '', updatedAt: '' },
   ]);
+});
+
+test('首次启动按 profile 存配置时，从旧的 DSH_HOME 级配置复制一份', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'dsh-ding-card-home-'));
+  const prev = { DSH_HOME: process.env.DSH_HOME, DSH_PROFILE: process.env.DSH_PROFILE, DSH_PROFILE_DIR: process.env.DSH_PROFILE_DIR };
+  const legacy = join(home, 'integrations', 'dsh-ding-card', 'config.json');
+  const target = join(home, 'integrations', 'dsh-ding-card', 'profiles', 'web', 'config.json');
+  try {
+    await mkdir(dirname(legacy), { recursive: true });
+    await writeFile(legacy, JSON.stringify({
+      version: 2,
+      cards: [{ id: 'card_legacy', name: '旧卡片', type: 'message', templateId: 'tpl-old' }],
+    }), 'utf8');
+    process.env.DSH_HOME = home;
+    process.env.DSH_PROFILE = 'web';
+    delete process.env.DSH_PROFILE_DIR;
+
+    const store = new CardConfigStore(configPath());
+    await store.load();
+    assert.equal(store.get().cards.length, 1, '应继承旧配置里的卡片');
+    assert.equal(store.get().cards[0].id, 'card_legacy');
+    assert.equal(await readFile(target, 'utf8').then((text) => JSON.parse(text).cards.length), 1, '新 profile 目录下应生成独立副本');
+    assert.equal(await readFile(legacy, 'utf8').then((text) => JSON.parse(text).cards.length), 1, '旧文件应保留');
+  } finally {
+    for (const [key, value] of Object.entries(prev)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    await rm(home, { recursive: true, force: true });
+  }
 });

@@ -17,16 +17,44 @@ export function dshHome(): string {
 
 export function profileDir(): string {
   if (process.env.DSH_PROFILE_DIR) return resolve(process.env.DSH_PROFILE_DIR);
-  const profile = process.env.DSH_PROFILE ?? 'desktop';
-  return join(dshHome(), 'profiles', profile);
+  return join(dshHome(), 'profiles', currentProfileName());
 }
 
-/** 当前 profile 名称（安装/更新命令与环境识别都按它执行）。 */
+/** 当前 profile 名称：宿主显式指定优先，其次按插件自身安装路径推断。 */
 export function currentProfileName(): string {
-  const dir = profileDir();
-  const parts = dir.split(/[\\/]/).filter(Boolean);
-  const name = parts[parts.length - 1];
-  return name || (process.env.DSH_PROFILE ?? 'desktop');
+  if (process.env.DSH_PROFILE_DIR) {
+    const parts = resolve(process.env.DSH_PROFILE_DIR).split(/[\\/]/).filter(Boolean);
+    if (parts.length) return parts[parts.length - 1] as string;
+  }
+  const fromInstall = profileFromInstallPath();
+  if (fromInstall) return fromInstall;
+  if (process.env.DSH_PROFILE) return process.env.DSH_PROFILE;
+  return 'desktop';
+}
+
+/**
+ * 从插件自身安装位置推断 profile：.../profiles/<name>/node_modules/dsh-ding-card/...
+ * 同一台机器同时装桌面端与网页端时，两个进程各自加载自己 profile 下的副本，
+ * 以此判断环境比 DSH_PROFILE 环境变量（未设置时默认 desktop）可靠。
+ */
+export function profileFromInstallPath(): string | null {
+  try {
+    const self = fileURLToPath(import.meta.url).replace(/\\/g, '/');
+    const matched = self.match(/\/profiles\/([^/]+)\/node_modules\/dsh-ding-card\//);
+    return matched ? matched[1] as string : null;
+  } catch {
+    return null;
+  }
+}
+
+/** 插件数据目录的根（DSH_HOME 级，各 profile 在这下面再分目录）。 */
+export function pluginDataRoot(): string {
+  return join(dshHome(), 'integrations', 'dsh-ding-card');
+}
+
+/** 当前 profile 专属的插件数据目录（配置 / 卡片库 / 日志明细 / 昵称表都放这里）。 */
+export function profileDataDir(): string {
+  return join(pluginDataRoot(), 'profiles', currentProfileName());
 }
 
 /** 插件包根目录（dist/*.js 的上一级）。 */
@@ -48,7 +76,7 @@ export function isLinkedToSource(): boolean {
   }
 }
 
-/** 所有已存在的 profile 目录（desktop / web / …）。 */
+/** 所有已存在的 profile 目录（desktop / web / …）。仅用于诊断，不参与环境判定。 */
 export async function listProfileDirs(): Promise<string[]> {
   const root = join(dshHome(), 'profiles');
   try {
@@ -79,12 +107,10 @@ export interface DshImInfo {
   declared: boolean;
   selected: boolean;
   profileDir: string;
+  /** 当前 profile 名（按插件自身安装路径推断）。 */
+  profile: string;
   installCommand: string;
   packageName: string;
-  /** 实际检测到 dsh-im 的 profile 名（当前 profile 未装时可能回退到 desktop 等）。 */
-  resolvedFrom?: string;
-  /** 是否来自当前 profile 之外的回退（如网页环境的 web profile 回退到 desktop）。 */
-  fallback?: boolean;
 }
 
 /** 单个 profile 的 dsh-im 状态。 */
@@ -104,31 +130,20 @@ async function inspectProfile(dir: string): Promise<{ installed: boolean; versio
 /**
  * Installed dsh-im bundle and its selected-bundle state.
  *
- * Checks the current profile first (desktop / web / …). When the current
- * profile has not installed dsh-im — the common case for a web deployment
- * whose profile only carries the web bundle — scan every other profile and
- * reuse the one that does have dsh-im, so the web environment still resolves
- * its bots / routes (those live under DSH_HOME, not per profile).
+ * 只检查当前 profile：网页端与桌面端各自安装、互不借用（web 未装即视为未安装，
+ * 不再回退到 desktop 的副本）。当前 profile 由 currentProfileName() 按插件自身
+ * 安装路径推断，避免宿主未设置 DSH_PROFILE 时一律当成 desktop。
  */
 export async function inspectDshIm(): Promise<DshImInfo> {
   const currentDir = profileDir();
   const current = await inspectProfile(currentDir);
-  const base = {
+  return {
+    ...current,
     profileDir: currentDir,
-    installCommand: `dsh plugin --profile ${process.env.DSH_PROFILE ?? 'desktop'} add ${PACKAGE_NAME}`,
+    profile: currentProfileName(),
+    installCommand: `dsh plugin --profile ${currentProfileName()} add ${PACKAGE_NAME}`,
     packageName: PACKAGE_NAME,
   };
-  if (current.installed) {
-    return { ...base, ...current, resolvedFrom: basename(currentDir) };
-  }
-  for (const dir of await listProfileDirs()) {
-    if (resolve(dir) === resolve(currentDir)) continue;
-    const found = await inspectProfile(dir);
-    if (found.installed) {
-      return { ...base, ...found, profileDir: dir, resolvedFrom: basename(dir), fallback: true };
-    }
-  }
-  return { ...base, ...current, resolvedFrom: basename(currentDir) };
 }
 
 /** dsh-im 存储的钉钉机器人（不解析密钥）。 */
@@ -141,6 +156,10 @@ export interface DingtalkBot {
 
 /** DingTalk bots stored by dsh-im, without resolving their secrets. */
 export async function readDingtalkBots(): Promise<DingtalkBot[]> {
+  // 机器人配置由当前 profile 的 dsh-im 维护：未装 dsh-im 时不引用，
+  // 避免网页环境显示桌面端机器人的“凭据就绪”。
+  const profile = await inspectProfile(profileDir());
+  if (!profile.installed) return [];
   const path = join(dshHome(), 'integrations', 'dsh-dingtalk', 'config.json');
   const config = await readJson(path) as Record<string, any> | null;
   const bots = Array.isArray(config?.bots) ? config.bots : [];
@@ -157,9 +176,10 @@ export async function readDingtalkBots(): Promise<DingtalkBot[]> {
 /**
  * userId -> displayName resolved from the sources dsh-im already keeps:
  *   1. approvedSenders (staffId -> displayName) persisted by dsh-im on approval,
- *   2. senderNick captured by this plugin from inbound stream messages
- *      (user_names.json). Both avoid calling DingTalk contact APIs, which need
- *      permissions this application does not have.
+ *   2. the pre-isolation shared nickname cache (legacy fallback),
+ *   3. senderNick captured by this plugin from inbound stream messages
+ *      (user_names.json of the current profile). All avoid calling DingTalk
+ *      contact APIs, which need permissions this application does not have.
  */
 export async function readUserNames(): Promise<Record<string, string>> {
   const names: Record<string, string> = {};
@@ -173,8 +193,18 @@ export async function readUserNames(): Promise<Record<string, string>> {
       }
     }
   } catch { /* ignore */ }
+  // profile 隔离之前的共享缓存：老版本只写这一份，升级后按 profile 分文件。
+  // 把它当兜底底稿读入，避免早期联系人的昵称在升级后凭空丢失（下面再被 profile 覆盖）。
   try {
-    const map = await readJson(join(dshHome(), 'integrations', 'dsh-ding-card', 'user_names.json'));
+    const legacy = await readJson(join(dshHome(), 'integrations', 'dsh-ding-card', 'user_names.json'));
+    if (legacy && typeof legacy === 'object' && !Array.isArray(legacy)) {
+      for (const [userId, name] of Object.entries(legacy)) {
+        if (userId && typeof name === 'string' && name.trim()) names[userId] = name.trim();
+      }
+    }
+  } catch { /* ignore */ }
+  try {
+    const map = await readJson(join(profileDataDir(), 'user_names.json'));
     if (map && typeof map === 'object' && !Array.isArray(map)) {
       for (const [userId, name] of Object.entries(map)) {
         if (userId && typeof name === 'string' && name.trim()) names[userId] = name.trim();
@@ -200,6 +230,9 @@ export interface SessionRoute {
 export async function readSessionRoutes(): Promise<Map<string, SessionRoute>> {
   const botsDir = join(dshHome(), 'integrations', 'dsh-dingtalk', 'bots');
   const routes = new Map<string, SessionRoute>();
+  // 会话路由由当前 profile 的 dsh-im 记录；未装 dsh-im 时不引用其他 profile 的数据。
+  const profile = await inspectProfile(profileDir());
+  if (!profile.installed) return routes;
   let entries: { isDirectory(): boolean; name: string }[] = [];
   try {
     entries = await readdir(botsDir, { withFileTypes: true });

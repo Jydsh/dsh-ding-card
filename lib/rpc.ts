@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import type { CardConfig, CardType, PluginConfig } from './store.js';
 import type { LatestVersionInfo } from './updater.js';
@@ -406,28 +407,99 @@ export function installRpc(ctx: DshCtx, deps: RpcDeps): { install(): void; dispo
     }
   }
 
+  /** 当前运行时是否提供 HMR（热更新）服务：可用时插件包变更能由宿主热重组，无需重启进程。 */
+  function hmrAvailable(): boolean {
+    try {
+      return typeof (ctx as Record<string, any>)?.get === 'function' && Boolean((ctx as Record<string, any>).get('hmr'));
+    } catch {
+      return false;
+    }
+  }
+
+  /** 宿主插件管理服务返回的失败原因 → 面向用户的中文说明。 */
+  function updateFailureText(authority: Record<string, any> | undefined): string {
+    const code = String(authority?.code ?? authority?.error?.code ?? '');
+    const table: Record<string, string> = {
+      'already-installed': '当前 DSH 处于热更新模式，已安装的包不能直接覆盖；请改用「卸载后立即重装」。',
+      'incompatible-version': '新版本与当前 DSH 版本不兼容，已保持原版本。',
+      'ambiguous-install': '安装结果无法定位到唯一的插件包，宿主已回滚 package.json。',
+      'not-bundle': '目标包没有声明组合包（dsh.bundle），不能作为插件安装。',
+      'invalid-spec': '安装地址无效。',
+      network: 'GitHub 连接失败，请检查网络后重试。',
+      timeout: '安装超时，请检查网络后重试。',
+      'not-removable': '宿主拒绝卸载该插件（可能随 DSH 自带或正在使用）。',
+      'stop-profile': '需要先停止当前 DSH 实例才能替换，请退出 DSH 后重试。',
+    };
+    return table[code] ?? '';
+  }
+
   /** 版本检查：对比当前插件版本与 GitHub 最新 Release，返回更新引导命令。 */
   async function versionCheck(): Promise<unknown> {
     const current = updater?.current ? updater.current() : null;
     const latest = updater?.check ? await updater.check() : null;
     const updateAvailable = Boolean(current && latest && !updater!.isAtLeast(current, latest.version));
     const profile = currentProfileName();
+    const command = updateAvailable
+      ? `dsh plugin --profile ${profile} add github:Jydsh/dsh-ding-card#v${latest!.version}`
+      : null;
     return {
       current,
       latest: latest?.version ?? null,
       source: latest?.source ?? null,
       updateAvailable,
       profile,
-      command: updateAvailable
-        ? `dsh plugin --profile ${profile} add github:Jydsh/dsh-ding-card#v${latest!.version}`
-        : null,
+      command,
+      /** 能否热更新（免重启）：宿主未提供 hmr 时为 false，覆盖更新后必须重启。 */
+      hotReload: hmrAvailable(),
+      /** 当前环境是本地开发链接（junction / --link）时，更新由工作树决定。 */
+      linkMode: isLinkedToSource(),
     };
+  }
+
+  /** 更新后需要重启时，给用户的重启方式（桌面端与网页端不同）。 */
+  function restartHint(profile: string): { kind: 'desktop' | 'web'; command: string | null; message: string } {
+    const electron = Boolean((process.versions as Record<string, string> | undefined)?.electron);
+    if (electron) {
+      return { kind: 'desktop', command: null, message: '退出并重新打开 DSH 客户端即可生效（当前会话会中断）。' };
+    }
+    return { kind: 'web', command: 'dsh web', message: '停掉当前 dsh web 进程（Ctrl+C）后重新执行 dsh web。' };
+  }
+
+  /** HMR 模式下宿主拒绝对已装包直接覆盖：排队“卸载后立即重装”，由宿主热重组。 */
+  function queueHotReload(manager: Record<string, any>, spec: string): void {
+    const timer = setTimeout(async () => {
+      try {
+        await manager.removeBundle('dsh-ding-card');
+      } catch (error) {
+        events.record('error', `热更新卸载失败：${(error as Error)?.message ?? error}`);
+        return;
+      }
+      // 卸载后必须装回，失败时重试一次；仍失败则记录，靠下次启动的自动更新恢复。
+      for (let attempt = 1; attempt <= 2; attempt += 1) {
+        try {
+          const result = await manager.installBundle(spec, { enabled: true }) as Record<string, any>;
+          events.record('info', `热更新重装完成（${attempt === 1 ? '首次' : '重试'}）`, {
+            application: result?.application,
+          });
+          return;
+        } catch (error) {
+          events.record('error', `热更新重装失败（第 ${attempt} 次）：${(error as Error)?.message ?? error}`);
+        }
+      }
+      events.record('error', '热更新未完成，插件当前处于未安装状态；重启 DSH 后由自动更新恢复，或执行手动命令安装。');
+    }, 1500);
+    (timer as unknown as { unref?: () => void }).unref?.();
   }
 
   /**
    * 一键更新：插件内部自动识别当前 profile，通过宿主的插件管理服务安装最新版本，
    * 不再要求用户复制命令。宿主未暴露插件管理服务、或当前是本地开发链接时，
    * 返回 manual 与对应命令。
+   *
+   * 生效规则（宿主行为，非本插件决定）：
+   * - 宿主提供 HMR 时：改为“卸载后立即重装”，宿主热重组，无需重启；
+   * - 宿主无 HMR 时：覆盖更新后宿主标记 restart-required，必须重启 DSH 才生效；
+   * - 首次安装：宿主会 publishAndReload，装完即生效。
    */
   async function versionUpdate(): Promise<unknown> {
     const profile = currentProfileName();
@@ -436,9 +508,10 @@ export function installRpc(ctx: DshCtx, deps: RpcDeps): { install(): void; dispo
     if (!latest?.version) {
       throw Object.assign(new Error('无法获取最新版本信息，请检查网络后重试。'), { code: 'version-unavailable' });
     }
-    const command = `dsh plugin --profile ${profile} add github:Jydsh/dsh-ding-card#v${latest.version}`;
+    const spec = `github:Jydsh/dsh-ding-card#v${latest.version}`;
+    const command = `dsh plugin --profile ${profile} add ${spec}`;
     if (current && updater!.isAtLeast(current, latest.version)) {
-      return { updated: false, message: `当前已是最新版本 v${current}。`, requiresRestart: false };
+      return { updated: false, profile, message: `当前已是最新版本 v${current}。`, requiresRestart: false };
     }
     if (isLinkedToSource()) {
       return {
@@ -446,7 +519,8 @@ export function installRpc(ctx: DshCtx, deps: RpcDeps): { install(): void; dispo
         manual: true,
         linkMode: true,
         command,
-        message: `当前插件是本地开发链接，插件不会自动替换开发目录。请用 git 更新本地工作树，或手动执行：${command}`,
+        profile,
+        message: `当前插件是本地开发链接（${profile} profile），插件不会替换开发目录。请更新工作树后重启 DSH，或手动执行：${command}`,
         requiresRestart: false,
       };
     }
@@ -456,34 +530,90 @@ export function installRpc(ctx: DshCtx, deps: RpcDeps): { install(): void; dispo
         updated: false,
         manual: true,
         command,
+        profile,
         message: `当前 DSH 未暴露插件管理服务，请在终端执行：${command}`,
         requiresRestart: false,
       };
     }
-    events.record('info', `开始一键更新插件到 v${latest.version}…`);
-    try {
-      const result = await (manager as Record<string, any>).installBundle(
-        `github:Jydsh/dsh-ding-card#v${latest.version}`,
-        { enabled: true },
-      );
-      events.record('info', `插件已更新到 v${latest.version}，重启 DSH 后生效`, {
-        application: (result as Record<string, any>)?.application,
-      });
+    if (hmrAvailable()) {
+      queueHotReload(manager as Record<string, any>, spec);
+      events.record('info', `热更新模式：排队卸载并立即重装 ${spec}，宿主将热重组插件`);
       return {
-        updated: true,
+        updated: false,
+        hotReload: true,
+        queued: true,
         version: latest.version,
         profile,
-        requiresRestart: true,
-        message: `已更新到 v${latest.version}，重启 DSH 后生效。`,
+        requiresRestart: false,
+        message: `热更新模式：正在卸载并立即重装 v${latest.version}，插件会短暂断开，宿主热重组后自动恢复。`,
+      };
+    }
+    events.record('info', `开始一键更新插件到 v${latest.version}…`);
+    try {
+      const result = await (manager as Record<string, any>).installBundle(spec, { enabled: true }) as Record<string, any>;
+      const application = String(result?.application ?? 'restart-required');
+      if (application === 'failed') {
+        const reason = updateFailureText(result?.error) || '宿主未返回具体原因。';
+        events.record('error', `插件更新失败：${reason}`);
+        throw Object.assign(new Error(`插件更新失败：${reason}`), { code: 'update-failed', detail: { command, result } });
+      }
+      const applied = application === 'applied';
+      const hint = applied ? null : restartHint(profile);
+      events.record(
+        'info',
+        applied
+          ? `插件已更新到 v${latest.version}，宿主已应用，无需重启`
+          : `插件已更新到 v${latest.version}，需重启 DSH 生效`,
+        { application },
+      );
+      return {
+        updated: true,
+        applied,
+        requiresRestart: !applied,
+        version: latest.version,
+        profile,
+        restart: hint,
+        message: applied
+          ? `已更新到 v${latest.version}，无需重启即已生效。`
+          : `已更新到 v${latest.version}，重启 DSH 后生效。${hint?.message ?? ''}`,
         result,
       };
     } catch (error) {
-      events.record('error', `插件更新失败：${(error as Error)?.message ?? error}`);
-      throw Object.assign(new Error(`插件更新失败：${(error as Error)?.message ?? error}`), {
+      const reason = updateFailureText(error as Record<string, any>) || ((error as Error)?.message ?? String(error));
+      events.record('error', `插件更新失败：${reason}`);
+      throw Object.assign(new Error(`插件更新失败：${reason}`), {
         code: (error as Record<string, any>)?.code ?? 'update-failed',
         detail: { command },
       });
     }
+  }
+
+  /**
+   * 重启 DSH：桌面宿主（Electron）用 app.relaunch 自我重启；
+   * 网页端 / 纯 node 宿主无法自杀式重启，回退为手动命令。
+   */
+  async function versionRestart(): Promise<unknown> {
+    const profile = currentProfileName();
+    const hint = restartHint(profile);
+    try {
+      const require2 = createRequire(import.meta.url);
+      const electron = require2('electron') as Record<string, any>;
+      const app = electron?.app;
+      if (app && typeof app.relaunch === 'function' && typeof app.exit === 'function') {
+        events.record('warn', `按用户确认重启 DSH（${profile} profile）`);
+        app.relaunch({ args: process.argv.slice(1) });
+        setTimeout(() => { try { app.exit(0); } catch { /* 退出失败由用户手动关闭 */ } }, 300);
+        return { restarted: true, profile, message: '正在重启 DSH 客户端…' };
+      }
+    } catch { /* ELECTRON_RUN_AS_NODE / 纯 node 宿主没有 app，走手动回退 */ }
+    events.record('warn', `当前宿主不允许插件自行重启，需要手动重启（${profile} profile）`);
+    return {
+      restarted: false,
+      manual: true,
+      profile,
+      command: hint.command,
+      message: `当前宿主不允许插件自行重启，请手动重启：${hint.message}`,
+    };
   }
 
   function sidebarVisibleFor(config: PluginConfig): boolean {
@@ -517,6 +647,7 @@ export function installRpc(ctx: DshCtx, deps: RpcDeps): { install(): void; dispo
     if (method === 'bot.check') return checkBot();
     if (method === 'version.check') return versionCheck();
     if (method === 'version.update') return versionUpdate();
+    if (method === 'version.restart') return versionRestart();
     if (method === 'dshim.install') return installDshIm();
     if (method === 'pending.list') return { pending: cards.pendingList() };
     if (method === 'sidebar-entry.get') {

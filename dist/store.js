@@ -1,8 +1,8 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
 import { readFileSync, statSync } from 'node:fs';
-import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
+import { pluginDataRoot, profileDataDir } from './dshim.js';
 const MAX_TIMEOUT_MS = 24 * 60 * 60 * 1000;
 const MIN_TIMEOUT_MS = 30 * 1000;
 const MAX_OPTIONS = 6;
@@ -530,9 +530,35 @@ export function sanitizeConfig(input) {
         },
     };
 }
+/** 当前 profile 专属配置：各环境（desktop / web）互不影响。 */
 export function configPath() {
-    const home = resolve(process.env.DSH_HOME ?? join(homedir(), '.dsh'));
-    return join(home, 'integrations', 'dsh-ding-card', 'config.json');
+    return join(profileDataDir(), 'config.json');
+}
+/**
+ * 首次切换到按 profile 存放时，把旧的 DSH_HOME 级配置复制一份过来。
+ * 只复制、不删除旧文件：另一个环境首次启动时同样能拿到同一份初始数据。
+ * 仅对默认配置路径生效：显式传入自定义路径（测试、临时 store）不做迁移。
+ */
+async function migrateLegacyConfig(target) {
+    if (resolve(target) !== resolve(configPath()))
+        return false;
+    const legacy = join(pluginDataRoot(), 'config.json');
+    if (resolve(legacy) === resolve(target))
+        return false;
+    try {
+        await readFile(legacy, 'utf8');
+    }
+    catch {
+        return false;
+    }
+    try {
+        await mkdir(dirname(target), { recursive: true, mode: 0o700 });
+        await copyFile(legacy, target);
+        return true;
+    }
+    catch {
+        return false;
+    }
 }
 export class CardConfigStore {
     #path;
@@ -565,15 +591,20 @@ export class CardConfigStore {
         catch { /* 文件不可读/不存在时保持现状，不抛错 */ }
     }
     async load() {
+        let raw = null;
         try {
-            const raw = await readFile(this.#path, 'utf8');
-            this.#config = sanitizeConfig(JSON.parse(raw.replace(/^\uFEFF/, '')));
+            raw = await readFile(this.#path, 'utf8');
         }
         catch (error) {
             if (error?.code !== 'ENOENT')
                 throw error;
-            this.#config = sanitizeConfig(DEFAULT_CONFIG);
+            if (await migrateLegacyConfig(this.#path)) {
+                raw = await readFile(this.#path, 'utf8').catch(() => null);
+            }
         }
+        this.#config = raw === null
+            ? sanitizeConfig(DEFAULT_CONFIG)
+            : sanitizeConfig(JSON.parse(raw.replace(/^\uFEFF/, '')));
         this.#loaded = true;
         await this.#recordMtime();
         return this.get();
